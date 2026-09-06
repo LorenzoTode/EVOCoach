@@ -480,3 +480,366 @@ body {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
+
+/* ==========================================================================
+   App a schermo intero — nessuno scroll di pagina
+   La finestra e' l'altezza. Solo il pannello del coach scorre al suo interno.
+   ========================================================================== */
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell {
+  position: relative;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.layout {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-col {
+  min-height: 0;
+}
+
+.map-col > .map-wrap,
+.map-wrap {
+  min-height: 0;
+}
+
+.coach {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* ==========================================================================
+   Transizioni fra schermate
+   ========================================================================== */
+
+.fade {
+  position: absolute;
+  inset: 0;
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes screen-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px) scale(1.01);
+  }
+}
+
+.fade-in {
+  animation: screen-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.fade-out {
+  animation: screen-out 0.4s cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+.screen {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+}
+
+/* ==========================================================================
+   Benvenuto
+   ========================================================================== */
+
+.welcome-inner {
+  max-width: 620px;
+  display: grid;
+  gap: 18px;
+  justify-items: center;
+}
+
+.welcome-inner > * {
+  animation: screen-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.welcome-inner > *:nth-child(1) { animation-delay: 0.05s; }
+.welcome-inner > *:nth-child(2) { animation-delay: 0.12s; }
+.welcome-inner > *:nth-child(3) { animation-delay: 0.2s; }
+.welcome-inner > *:nth-child(4) { animation-delay: 0.3s; }
+.welcome-inner > *:nth-child(5) { animation-delay: 0.4s; }
+
+.welcome-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.welcome-title {
+  margin: 0;
+  font-size: clamp(44px, 9vw, 92px);
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+}
+
+.welcome-title span {
+  display: block;
+  color: var(--accent);
+}
+
+.welcome-lead {
+  margin: 0;
+  max-width: 46ch;
+  font-size: clamp(15px, 1.6vw, 17px);
+  line-height: 1.55;
+  color: rgba(244, 247, 250, 0.72);
+}
+
+.welcome-btn {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 30px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #04211f;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.25s ease,
+    background 0.2s ease;
+  box-shadow: 0 8px 30px rgba(15, 143, 138, 0.32);
+}
+
+.welcome-btn svg {
+  width: 20px;
+  height: 20px;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.welcome-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 40px rgba(15, 143, 138, 0.42);
+}
+
+.welcome-btn:hover svg {
+  transform: translateX(4px);
+}
+
+.welcome-btn:active {
+  transform: translateY(0);
+}
+
+.welcome-btn:focus-visible {
+  outline: 2px solid rgba(244, 247, 250, 0.9);
+  outline-offset: 5px;
+}
+
+.welcome-note {
+  margin: 14px 0 0;
+  max-width: 44ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(244, 247, 250, 0.45);
+}
+
+/* ==========================================================================
+   Attesa
+   ========================================================================== */
+
+.waiting-inner {
+  max-width: 560px;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+
+.waiting-inner h2 {
+  margin: 0;
+  font-size: clamp(24px, 3.4vw, 34px);
+  letter-spacing: -0.01em;
+}
+
+.waiting-lead {
+  margin: 0;
+  max-width: 44ch;
+  line-height: 1.55;
+  color: rgba(244, 247, 250, 0.65);
+}
+
+.pulse {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  display: grid;
+  place-items: center;
+}
+
+.pulse span {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(244, 247, 250, 0.32);
+  animation: pulse-ring 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.pulse.live span {
+  border-color: var(--accent);
+}
+
+.pulse span:nth-child(2) { animation-delay: 0.8s; }
+.pulse span:nth-child(3) { animation-delay: 1.6s; }
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.42);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.waiting-facts {
+  margin: 6px 0 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.waiting-facts > div {
+  padding: 12px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.waiting-facts dt {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(244, 247, 250, 0.45);
+}
+
+.waiting-facts dd {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waiting-laps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.tally {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tally strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.tally.ok {
+  color: #7fe3b4;
+  border-color: rgba(31, 157, 98, 0.4);
+}
+
+.tally.bad {
+  color: #ffa8a8;
+  border-color: rgba(214, 69, 69, 0.4);
+}
+
+.tally.warn {
+  color: #ffd08a;
+  border-color: rgba(217, 119, 6, 0.45);
+}
+
+@media (max-width: 720px) {
+  .waiting-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Chi ha chiesto meno movimento non deve subirlo. */
+@media (prefers-reduced-motion: reduce) {
+  .fade-in,
+  .fade-out,
+  .welcome-inner > *,
+  .pulse span {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
+
+  .welcome-btn,
+  .welcome-btn svg {
+    transition: none;
+  }
+}
+
+/* Il coach scorre dentro di se': senza questo il contenuto si taglia netto a
+   meta' frase. La maschera sfuma gli ultimi pixel, il padding fa si' che a
+   fondo scroll la sfumatura cada sul vuoto e non sull'ultima riga. */
+.coach {
+  padding-bottom: 36px;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coach {
+    mask-image: none;
+    padding-bottom: 16px;
+  }
+}

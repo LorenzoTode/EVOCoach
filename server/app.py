@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,9 +26,23 @@ from telemetry.track_map import TrackMapBuilder
 
 load_dotenv()
 
-ROOT = Path(__file__).resolve().parent.parent
+def _root() -> Path:
+    """Radice dei file dell'app.
+
+    Impacchettata con PyInstaller, la cartella web/dist finisce nella
+    directory temporanea di estrazione, non accanto al sorgente.
+    """
+    bundle = getattr(sys, "_MEIPASS", None)
+    return Path(bundle) if bundle else Path(__file__).resolve().parent.parent
+
+
+ROOT = _root()
 WEB_DIST = ROOT / "web" / "dist"
 HZ = float(os.getenv("TELEMETRY_HZ", "15"))
+
+# Sotto questa soglia non e' un giro: reset in pista, teletrasporto ai box,
+# cambio sessione. Il gioco puo' comunque emettere un "last lap time".
+MIN_LAP_MS = 15_000
 
 ELECTRONICS_KEYS = (
     "electronics_tc_level",
@@ -99,6 +114,25 @@ def _extract_electronics(graphics: dict[str, Any]) -> dict[str, Any]:
     return {k: graphics.get(k) for k in ELECTRONICS_KEYS if graphics.get(k) is not None}
 
 
+def _lap_invalidated(graphics: dict[str, Any]) -> bool:
+    """Il giro in corso e' stato invalidato dal gioco?
+
+    Tre segnali indipendenti letti dalla memoria condivisa di AC EVO:
+      is_valid_lap        flag autoritativo del gioco
+      timing_is_invalid   flag del sistema di cronometraggio
+      number_of_tyres_out quattro ruote fuori = track limits
+
+    Ognuno da solo invalida il giro. Il flag va ricordato per tutto il giro:
+    il gioco puo' azzerarlo sul traguardo, ma il giro resta sporco.
+    """
+    tyres_out = graphics.get("number_of_tyres_out")
+    return (
+        graphics.get("is_valid_lap") is False
+        or bool(graphics.get("timing_is_invalid"))
+        or (isinstance(tyres_out, int) and tyres_out >= 4)
+    )
+
+
 def snapshot_to_frame(snapshot: Any) -> dict[str, Any]:
     p = snapshot.physics or {}
     g = snapshot.graphics or {}
@@ -131,6 +165,9 @@ def snapshot_to_frame(snapshot: Any) -> dict[str, Any]:
         "delta_ms": g.get("delta_time_ms"),
         "slip": slip if isinstance(slip, list) else [None, None, None, None],
         "electronics": electronics,
+        "lap_invalid": _lap_invalidated(g),
+        "tyres_out": g.get("number_of_tyres_out"),
+        "session_name": g.get("session_name"),
         "physics_setup": {
             "brake_bias": p.get("brake_bias"),
             "tyre_core_temp": p.get("tyre_core_temp") or p.get("tyre_temp"),
@@ -155,6 +192,11 @@ class LiveHub:
         self._last_electronics: dict[str, Any] = {}
         self._last_physics_setup: dict[str, Any] = {}
         self._task: asyncio.Task | None = None
+        # Validita' del giro in corso: sticky, si azzera solo a giro nuovo.
+        self._lap_valid = True
+        self._valid_laps = 0
+        self._invalid_laps = 0
+        self._track: str | None = None
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -195,6 +237,7 @@ class LiveHub:
         self.track_map.ingest(frame)
         frame["map"] = self.track_map.snapshot()
         frame["corners"] = _track_corners(frame.get("track"))
+        frame["session"] = self.session_state(frame)
         return frame
 
     def _poll_once(self) -> dict[str, Any]:
@@ -214,14 +257,70 @@ class LiveHub:
                     self._last_physics_setup = frame.get("physics_setup") or {}
                     self._ingest_live(frame)
                     return self._attach_map(frame)
-                if prefer_live:
-                    return {"connected": False, "mode": "live", "waiting": True, "map": self.track_map.snapshot()}
 
-        # demo fallback — use demo's own map builder state
+            # In modalita' live non si ripiega MAI sulla demo, nemmeno quando
+            # l'SDK non e' caricabile: mostrare un giro sintetico spacciandolo
+            # per telemetria vera e' peggio che dire "gioco non rilevato".
+            if prefer_live:
+                waiting = {
+                    "connected": False,
+                    "mode": "live",
+                    "waiting": True,
+                    "sdk_ready": client is not None,
+                    "map": self.track_map.snapshot(),
+                }
+                waiting["session"] = self.session_state(waiting)
+                return waiting
+
+        # demo fallback — solo in modalita' auto o demo
         frame = self.demo.next_frame()
+        frame["session"] = self.session_state(frame)
         return frame
 
+    def session_state(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Cosa deve mostrare l'interfaccia adesso.
+
+        waiting_game  il gioco non e' in ascolto
+        waiting_lap   collegati, ma nessun giro valido ancora completato
+        ready         c'e' almeno un giro valido da analizzare
+        demo          modalita' dimostrativa, dati sintetici
+        """
+        if frame.get("mode") == "demo":
+            state = "demo"
+        elif not frame.get("connected"):
+            state = "waiting_game"
+        elif self._valid_laps > 0:
+            state = "ready"
+        else:
+            state = "waiting_lap"
+        return {
+            "state": state,
+            "track": frame.get("track"),
+            "car": frame.get("car"),
+            "lap": frame.get("lap"),
+            "valid_laps": self._valid_laps,
+            "invalid_laps": self._invalid_laps,
+            "current_lap_valid": self._lap_valid,
+            "best_ms": frame.get("best_ms"),
+        }
+
+    def _reset_session(self, track: str | None) -> None:
+        """Pista cambiata: i conteggi della sessione precedente non valgono piu'."""
+        self._track = track
+        self._valid_laps = 0
+        self._invalid_laps = 0
+        self._lap_valid = True
+        self._lap_samples = []
+        self._last_lap_no = None
+        self._session_id = None
+
     def _ingest_live(self, frame: dict[str, Any]) -> None:
+        track = frame.get("track")
+        if track and self._track and track != self._track:
+            self._reset_session(track)
+        elif track and not self._track:
+            self._track = track
+
         lap_no = frame.get("lap")
         sample = {
             "t_ms": frame.get("t_ms") or 0,
@@ -246,23 +345,39 @@ class LiveHub:
         if self._last_lap_no is None:
             self._last_lap_no = lap_no
 
+        # Un giro sporcato resta sporco fino alla fine, anche se il gioco
+        # rialza il flag sul traguardo.
+        if frame.get("lap_invalid"):
+            self._lap_valid = False
+
         if lap_no is not None and self._last_lap_no is not None and lap_no != self._last_lap_no:
             if len(self._lap_samples) > 30:
-                last_t = self._lap_samples[-1].get("t_ms")
+                # Il tempo autoritativo e' quello che il gioco pubblica a giro
+                # chiuso; l'ultimo campione e' solo un ripiego.
+                game_time = frame.get("last_ms")
+                fallback = self._lap_samples[-1].get("t_ms")
+                lap_time = int(game_time or fallback or 0) or None
+                valid = bool(self._lap_valid and lap_time and lap_time >= MIN_LAP_MS)
                 self.db.save_lap(
                     self._session_id,
                     lap_number=self._last_lap_no,
-                    lap_time_ms=int(last_t) if last_t else None,
+                    lap_time_ms=lap_time,
                     track=frame.get("track"),
                     car=frame.get("car"),
                     samples=self._lap_samples,
+                    valid=valid,
                     meta={
                         "electronics": self._last_electronics,
                         "physics_setup": self._last_physics_setup,
                     },
                 )
+                if valid:
+                    self._valid_laps += 1
+                else:
+                    self._invalid_laps += 1
             self._lap_samples = []
             self._last_lap_no = lap_no
+            self._lap_valid = True
 
         self._lap_samples.append(sample)
 
@@ -322,8 +437,18 @@ def demo_bundle() -> dict[str, Any]:
 
 
 @app.get("/api/laps")
-def list_laps(track: str | None = None) -> list[dict[str, Any]]:
-    return hub.db.list_laps(track=track)
+def list_laps(track: str | None = None, include_invalid: bool = False) -> list[dict[str, Any]]:
+    """Giri salvati. Di default solo quelli validi: un giro con track limits
+    o penalita' non e' un riferimento e non e' analizzabile con senso."""
+    laps = hub.db.list_laps(track=track)
+    if include_invalid:
+        return laps
+    return [lap for lap in laps if lap.get("valid")]
+
+
+@app.get("/api/session")
+def session() -> dict[str, Any]:
+    return hub.session_state(hub.latest)
 
 
 @app.get("/api/laps/{lap_id}")

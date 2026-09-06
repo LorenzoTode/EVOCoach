@@ -37,6 +37,19 @@ export type Tip = {
   action?: string;
 };
 
+export type SessionState = {
+  /** waiting_game: il gioco non risponde · waiting_lap: collegati, nessun giro
+   *  valido · ready: c'e' almeno un giro valido · demo: dati sintetici */
+  state: "waiting_game" | "waiting_lap" | "ready" | "demo";
+  track?: string | null;
+  car?: string | null;
+  lap?: number | null;
+  valid_laps: number;
+  invalid_laps: number;
+  current_lap_valid: boolean;
+  best_ms?: number | null;
+};
+
 export type LapRow = {
   id: number;
   lap_number?: number | null;
@@ -91,6 +104,9 @@ export type LiveFrame = {
   electronics?: Record<string, number | null>;
   map?: MapSnapshot;
   corners?: Array<{ id?: number; name: string; start: number; end: number }>;
+  session?: SessionState;
+  lap_invalid?: boolean;
+  tyres_out?: number | null;
   ts?: number;
 };
 

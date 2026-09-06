@@ -13,8 +13,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=("auto", "demo", "live"),
-        default="auto",
-        help="auto: live if game is up else demo. demo: always synthetic. live: shared memory only.",
+        default="live",
+        help=(
+            "live (default): waits for AC EVO, starts with no data. "
+            "demo: synthetic Monza lap, for trying the app without the game. "
+            "auto: live if the game is up, else demo."
+        ),
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the browser on start.",
     )
     parser.add_argument("--hz", type=float, default=15.0)
     parser.add_argument(
@@ -119,7 +128,24 @@ def main() -> int:
         print("Install deps: python -m pip install -r requirements.txt", file=sys.stderr)
         return 1
 
-    uvicorn.run("server.app:app", host=args.host, port=args.port, reload=False)
+    if not args.no_browser:
+        # Il browser va aperto su un indirizzo raggiungibile: con --host 0.0.0.0
+        # il server ascolta ovunque, ma la finestra locale deve puntare a 127.0.0.1.
+        import threading
+        import webbrowser
+
+        local = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+        url = f"http://{local}:{args.port}"
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        print(f"\n  ACEVO Coach -> {url}")
+        if args.host == "0.0.0.0":
+            print("  Da telefono o tablet: http://<ip-del-pc>:%d\n" % args.port)
+
+    # L'oggetto invece della stringa "server.app:app": una stringa d'import
+    # non si risolve dentro un eseguibile impacchettato.
+    from server.app import app as fastapi_app
+
+    uvicorn.run(fastapi_app, host=args.host, port=args.port, reload=False)
     return 0
 
 
