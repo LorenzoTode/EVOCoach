@@ -48,7 +48,9 @@ export type CoachReport = {
 
 export type MapSnapshot = {
   track?: string | null;
-  path: Array<{ x: number; z: number; npos?: number }>;
+  /** Assente quando il tracciato non e' cambiato: il client tiene il precedente. */
+  path?: Array<{ x: number; z: number; npos?: number }>;
+  path_version?: number;
   delta_segments: DeltaSegment[];
   delta_ready: boolean;
   laps_completed: number;

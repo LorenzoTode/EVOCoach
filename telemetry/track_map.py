@@ -21,6 +21,9 @@ class TrackMapBuilder:
         self.delta_ready = False
         self._last_lap: int | None = None
         self._last_npos: float | None = None
+        # Cambia solo quando il tracciato acquisisce un punto nuovo. Dopo un giro
+        # completo si congela, e il WebSocket smette di rispedire ~28 KB per frame.
+        self.path_version = 0
 
     def reset(self, track: str | None = None) -> None:
         self.track = track
@@ -32,6 +35,7 @@ class TrackMapBuilder:
         self.delta_ready = False
         self._last_lap = None
         self._last_npos = None
+        self.path_version += 1
 
     def _bin(self, npos: float) -> int:
         n = ((float(npos) % 1.0) + 1.0) % 1.0
@@ -77,6 +81,7 @@ class TrackMapBuilder:
                 if prev is None:
                     self._xz[i] = (xf, zf)
                     self._counts[i] = 1
+                    self.path_version += 1
                 else:
                     n = self._counts[i] + 1
                     self._xz[i] = (
@@ -122,7 +127,9 @@ class TrackMapBuilder:
         for i, p in enumerate(self._xz):
             if p is None:
                 continue
-            pts.append({"x": p[0], "z": p[1], "npos": i / self.bins})
+            pts.append(
+                {"x": round(p[0], 1), "z": round(p[1], 1), "npos": round(i / self.bins, 4)}
+            )
         return pts
 
     def delta_segments(self) -> list[dict[str, float]]:
@@ -144,13 +151,20 @@ class TrackMapBuilder:
                 else:
                     continue
             last = val
-            segs.append({"npos": i / self.bins, "delta_ms": float(val), "instant_ms": 0.0})
+            segs.append(
+                {
+                    "npos": round(i / self.bins, 4),
+                    "delta_ms": round(float(val), 1),
+                    "instant_ms": 0.0,
+                }
+            )
         return segs
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "track": self.track,
             "path": self.path(),
+            "path_version": self.path_version,
             "delta_segments": self.delta_segments(),
             "delta_ready": self.delta_ready or (self.laps_completed >= 1 and bool(self._lap_delta)),
             "laps_completed": self.laps_completed,

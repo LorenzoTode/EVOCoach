@@ -50,7 +50,15 @@ export default function App() {
       ws = new WebSocket(wsUrl());
       ws.onmessage = (ev) => {
         try {
-          setLive(JSON.parse(ev.data) as LiveFrame);
+          const next = JSON.parse(ev.data) as LiveFrame;
+          setLive((prev) => {
+            // Il server omette map.path quando il tracciato non e' cambiato:
+            // senza questo la mappa sparirebbe a ogni frame.
+            if (next.map && !next.map.path && prev?.map?.path) {
+              next.map = { ...next.map, path: prev.map.path };
+            }
+            return next;
+          });
         } catch {
           /* ignore */
         }

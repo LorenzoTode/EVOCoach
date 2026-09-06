@@ -249,6 +249,9 @@ class DemoPlayer:
                     for i, (x, z) in enumerate(MONZA_PATH)
                 ],
                 "map_ready": True,
+                # sentinella: il tracciato di ripiego non e' quello del builder,
+                # e va sostituito appena il vero path e' abbastanza denso
+                "path_version": -1,
             }
         frame["map"] = snap
         return frame

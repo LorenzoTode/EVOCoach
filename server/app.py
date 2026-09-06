@@ -461,10 +461,28 @@ def setup_live() -> dict[str, Any]:
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket) -> None:
+    """Stream dei frame live.
+
+    Il tracciato (~28 KB) viene mandato solo quando cambia: dopo il primo giro
+    resta identico, e rispedirlo a ogni frame saturava il WiFi verso un secondo
+    schermo. Il client tiene l'ultimo ricevuto.
+    """
     await ws.accept()
+    sent_path_version: int | None = None
     try:
         while True:
-            await ws.send_json(hub.latest)
+            frame = hub.latest
+            snapshot = frame.get("map")
+            if isinstance(snapshot, dict):
+                version = snapshot.get("path_version")
+                if version is not None and version == sent_path_version:
+                    frame = {
+                        **frame,
+                        "map": {k: v for k, v in snapshot.items() if k != "path"},
+                    }
+                else:
+                    sent_path_version = version
+            await ws.send_json(frame)
             await asyncio.sleep(1.0 / max(HZ, 1.0))
     except WebSocketDisconnect:
         return
