@@ -357,15 +357,22 @@ def generate_coach_report(
         client = _get_client(api_key)
         compact = _compact_analysis(analysis, history)
 
+        model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
+        request: dict[str, Any] = {
+            "model": model,
+            "max_tokens": 16000,
+            "system": SYSTEM_PROMPT,
+            "output_config": {"format": {"type": "json_schema", "schema": REPORT_SCHEMA}},
+        }
+        # Haiku 4.5 non supporta ne' il thinking adaptive ne' output_config.effort:
+        # con quei parametri l'API risponde 400. Sui modelli che li accettano
+        # valgono la spesa: il compito e' ragionamento su numeri.
+        if "haiku" not in model:
+            request["thinking"] = {"type": "adaptive"}
+            request["output_config"]["effort"] = os.getenv("ANTHROPIC_EFFORT", "high")
+
         message = client.messages.create(
-            model=os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL),
-            max_tokens=16000,
-            system=SYSTEM_PROMPT,
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": "high",
-                "format": {"type": "json_schema", "schema": REPORT_SCHEMA},
-            },
+            **request,
             messages=[
                 {
                     "role": "user",
