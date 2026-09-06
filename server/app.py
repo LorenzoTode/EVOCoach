@@ -193,7 +193,18 @@ def snapshot_to_frame(snapshot: Any) -> dict[str, Any]:
         "tyres_out": g.get("number_of_tyres_out"),
         "in_pit": bool(g.get("is_in_pit") or g.get("is_in_pit_lane") or g.get("is_in_pit_box")),
         "session_name": g.get("session_name"),
-        "diag": {k: g.get(k) for k in DIAG_KEYS},
+        "diag": {
+            **{k: g.get(k) for k in DIAG_KEYS},
+            # Valori ricavati: se la mappa non si disegna, il perche' e' qui.
+            "_ricavato_npos": float(npos or 0.0),
+            "_ricavato_x": x,
+            "_ricavato_z": z,
+            "_car_coordinates_n": len(g["car_coordinates"]) if isinstance(g.get("car_coordinates"), list) else None,
+            "_car_coordinates_primo": (g.get("car_coordinates") or [None])[0],
+            "_tyre_contact_point_n": len(p["tyre_contact_point"]) if isinstance(p.get("tyre_contact_point"), list) else None,
+            "_chiavi_graphics": len(g),
+            "_chiavi_physics": len(p),
+        },
         "physics_setup": {
             "brake_bias": p.get("brake_bias"),
             "tyre_core_temp": p.get("tyre_core_temp") or p.get("tyre_temp"),
@@ -225,6 +236,10 @@ class LiveHub:
         self._invalid_laps = 0
         self._track: str | None = None
         self._last_npos: float | None = None
+        # Estensione di giro percorsa: dice "sta guidando" anche se le
+        # coordinate mondo non arrivano e la mappa resta vuota.
+        self._npos_lo: float | None = None
+        self._npos_hi: float | None = None
         self._last_reported_ms: int | None = None
         self._last_diag: dict[str, Any] = {}
         self._last_saved: dict[str, Any] | None = None
@@ -347,14 +362,20 @@ class LiveHub:
         ready         c'e' almeno un giro valido da analizzare
         demo          modalita' dimostrativa, dati sintetici
         """
-        # Basta che ci sia qualcosa da guardare: la mappa che si disegna con
-        # la macchina sopra vale gia' da sola, l'analisi arriva dopo.
+        # Si entra nell'app perche' si sta guidando, non perche' il tracciato
+        # si e' disegnato: le coordinate mondo possono non arrivare affatto, e
+        # legare l'ingresso alla mappa significherebbe restare fuori per sempre.
         coverage = float((frame.get("map") or {}).get("coverage") or 0.0)
+        driving = (
+            self._npos_lo is not None
+            and self._npos_hi is not None
+            and (self._npos_hi - self._npos_lo) > 0.1
+        )
         if frame.get("mode") == "demo":
             state = "demo"
         elif not frame.get("connected"):
             state = "waiting_game"
-        elif self._valid_laps > 0 or coverage >= 0.25:
+        elif self._valid_laps > 0 or coverage >= 0.25 or driving:
             state = "ready"
         else:
             state = "waiting_lap"
@@ -382,6 +403,7 @@ class LiveHub:
         self._lap_samples = []
         self._last_lap_no = None
         self._last_npos = None
+        self._npos_lo = self._npos_hi = None
         self._last_reported_ms = None
         self._last_saved = None
         self._session_id = None
@@ -468,6 +490,11 @@ class LiveHub:
         }
         if self._session_id is None:
             self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
+
+        npos = frame.get("npos")
+        if npos is not None:
+            self._npos_lo = npos if self._npos_lo is None else min(self._npos_lo, npos)
+            self._npos_hi = npos if self._npos_hi is None else max(self._npos_hi, npos)
 
         # Un giro sporcato resta sporco fino alla fine, anche se il gioco
         # rialza il flag sul traguardo.
@@ -558,8 +585,16 @@ def debug_telemetry() -> dict[str, Any]:
     Serve quando i giri non vengono contati: mette a confronto i campi grezzi
     della memoria condivisa con lo stato interno, senza dover indovinare.
     """
+    mappa = hub.track_map.snapshot()
     return {
+        "versione": "diagnostica-2",
         "gioco": hub._last_diag,
+        "mappa": {
+            "copertura": mappa.get("coverage"),
+            "punti_tracciato": len(mappa.get("path") or []),
+            "giri_mappati": mappa.get("laps_completed"),
+            "delta_pronto": mappa.get("delta_ready"),
+        },
         "app": {
             "mode": hub.mode,
             "track": hub._track,
@@ -571,6 +606,7 @@ def debug_telemetry() -> dict[str, Any]:
             "ultimo_tempo_pubblicato": hub._last_reported_ms,
             "giri_validi": hub._valid_laps,
             "giri_scartati": hub._invalid_laps,
+            "npos_percorso": [hub._npos_lo, hub._npos_hi],
         },
         "ultimo_giro_archiviato": hub._last_saved,
         "giri_nel_database": hub.db.list_laps(limit=10),
