@@ -18,6 +18,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hz", type=float, default=15.0)
     parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List the models the configured coach backend can actually use, then exit.",
+    )
+    parser.add_argument(
         "--cli",
         action="store_true",
         help="Legacy console telemetry monitor instead of the web app.",
@@ -25,8 +30,62 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def list_models() -> int:
+    """Chiede al provider quali modelli sono disponibili con la chiave configurata.
+
+    I nomi dei modelli cambiano spesso e un nome ritirato da' un 404: meglio
+    chiederli che tenerli scritti in una guida che invecchia.
+    """
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    base_url = os.getenv("COACH_BASE_URL", "").strip().rstrip("/")
+
+    if base_url:
+        key = os.getenv("COACH_API_KEY", "").strip()
+        req = urllib.request.Request(
+            f"{base_url}/models", headers={"Authorization": f"Bearer {key}"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            print(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:400]}", file=sys.stderr)
+            return 1
+        except urllib.error.URLError as exc:
+            print(f"Provider irraggiungibile: {exc.reason}", file=sys.stderr)
+            return 1
+        names = sorted(m.get("id", "?") for m in data.get("data", []))
+        print(f"Modelli disponibili su {base_url} ({len(names)}):\n")
+        for name in names:
+            print(f"  COACH_MODEL={name}")
+        return 0
+
+    if os.getenv("ANTHROPIC_API_KEY", "").strip():
+        import anthropic
+
+        print("Modelli disponibili su Anthropic:\n")
+        for model in anthropic.Anthropic().models.list():
+            print(f"  ANTHROPIC_MODEL={model.id}   ({model.display_name})")
+        return 0
+
+    print(
+        "Nessun backend configurato: imposta COACH_BASE_URL oppure "
+        "ANTHROPIC_API_KEY nel file .env (vedi .env.example).",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main() -> int:
     args = parse_args()
+    if args.list_models:
+        return list_models()
     if args.cli:
         from telemetry.live import LiveSharedMemoryClient
 
