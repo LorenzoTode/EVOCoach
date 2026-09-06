@@ -18,9 +18,17 @@ circuito, vettura e tempi; dal secondo giro valido arriva l'analisi.
 
 ### Secondo schermo
 
-`AvviaCoach.bat` ascolta già su tutta la rete locale: dal telefono o dal tablet
-apri `http://<ip-del-pc>:8787` (l'IP con `ipconfig`). Serve una regola del
-firewall, una volta sola, da PowerShell come amministratore:
+L'app ascolta sulla rete locale e all'avvio **stampa l'indirizzo da usare**:
+
+```
+  ACEVO COACH
+    su questo PC     http://127.0.0.1:8787
+    da un altro schermo  http://192.168.1.42:8787
+```
+
+Apri quel secondo indirizzo dal portatile, dal telefono o dal tablet. Serve
+una regola del firewall sul PC che fa girare l'app, una volta sola, da
+PowerShell come amministratore:
 
 ```powershell
 New-NetFirewallRule -DisplayName "ACEVO Telemetry Coach" -Direction Inbound -LocalPort 8787 -Protocol TCP -Action Allow
@@ -67,9 +75,9 @@ dall'eseguibile: la chiave API non finisce dentro un binario.
 
 | Comando | Effetto |
 |---|---|
-| `main.py` | attende AC EVO, parte senza dati |
+| `main.py` | attende AC EVO, parte senza dati, ascolta sulla rete locale |
 | `main.py --mode demo` | giro sintetico di Monza, per provare senza il gioco |
-| `main.py --host 0.0.0.0` | raggiungibile dalla rete locale |
+| `main.py --host 127.0.0.1` | solo su questo PC, non dalla rete |
 | `main.py --list-models` | modelli disponibili con la chiave configurata |
 | `main.py --no-browser` | non apre il browser |
 | `main.py --cli` | vecchio monitor da console |

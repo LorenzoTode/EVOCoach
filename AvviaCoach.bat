@@ -14,7 +14,7 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-".venv\Scripts\python.exe" main.py --host 0.0.0.0 %*
+".venv\Scripts\python.exe" main.py %*
 
 rem Se il server esce con errore la finestra resta aperta per farlo leggere.
 if errorlevel 1 (

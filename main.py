@@ -8,7 +8,16 @@ import sys
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ACEVO Telemetry Coach")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help=(
+            "Interfaccia di ascolto. Default 0.0.0.0: raggiungibile dalla rete "
+            "locale, che e' il caso d'uso normale (il gioco su un PC, "
+            "l'interfaccia su un altro schermo). Usa 127.0.0.1 per limitarlo "
+            "a questo computer."
+        ),
+    )
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
         "--mode",
@@ -37,6 +46,25 @@ def parse_args() -> argparse.Namespace:
         help="Legacy console telemetry monitor instead of the web app.",
     )
     return parser.parse_args()
+
+
+def lan_ip() -> str | None:
+    """Indirizzo di questo PC sulla rete locale.
+
+    Aprire un socket UDP verso un indirizzo esterno non invia nulla: serve
+    solo a farsi dire dal sistema operativo quale interfaccia userebbe.
+    """
+    import socket
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+        finally:
+            sock.close()
+    except OSError:
+        return None
 
 
 def list_models() -> int:
@@ -128,18 +156,27 @@ def main() -> int:
         print("Install deps: python -m pip install -r requirements.txt", file=sys.stderr)
         return 1
 
+    # Con --host 0.0.0.0 il server ascolta ovunque, ma la finestra locale deve
+    # puntare a un indirizzo concreto.
+    local = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+    url = f"http://{local}:{args.port}"
+
+    print("\n  ACEVO COACH")
+    print(f"    su questo PC     {url}")
+    if args.host in ("0.0.0.0", "::", ""):
+        ip = lan_ip()
+        if ip:
+            print(f"    da un altro schermo  http://{ip}:{args.port}")
+            print("    (stessa rete; serve la regola del firewall sulla porta %d)" % args.port)
+        else:
+            print("    da un altro schermo  http://<ip-di-questo-pc>:%d" % args.port)
+    print()
+
     if not args.no_browser:
-        # Il browser va aperto su un indirizzo raggiungibile: con --host 0.0.0.0
-        # il server ascolta ovunque, ma la finestra locale deve puntare a 127.0.0.1.
         import threading
         import webbrowser
 
-        local = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
-        url = f"http://{local}:{args.port}"
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-        print(f"\n  ACEVO Coach -> {url}")
-        if args.host == "0.0.0.0":
-            print("  Da telefono o tablet: http://<ip-del-pc>:%d\n" % args.port)
 
     # L'oggetto invece della stringa "server.app:app": una stringa d'import
     # non si risolve dentro un eseguibile impacchettato.
