@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -313,6 +315,122 @@ def _compact_analysis(
 
 
 # --------------------------------------------------------------------------- #
+# Backend generico "OpenAI-compatibile"
+#
+# Copre i provider con piano gratuito (Google AI Studio, OpenRouter, Groq) e
+# Ollama in locale: parlano tutti lo stesso protocollo. Si attiva impostando
+# COACH_BASE_URL nel .env, e ha la precedenza sul backend Anthropic.
+#
+# Usa la stdlib invece di un SDK: e' una sola richiesta HTTP, non vale una
+# dipendenza in piu' su una macchina da gioco.
+# --------------------------------------------------------------------------- #
+
+def _schema_without_limits(node: Any) -> Any:
+    """Copia dello schema senza maxItems.
+
+    La modalita' strict di molti provider rifiuta i vincoli di cardinalita';
+    i limiti restano scritti nel prompt di sistema.
+    """
+    if isinstance(node, dict):
+        return {k: _schema_without_limits(v) for k, v in node.items() if k != "maxItems"}
+    if isinstance(node, list):
+        return [_schema_without_limits(v) for v in node]
+    return node
+
+
+def _post_json(url: str, payload: dict[str, Any], api_key: str, timeout: float) -> dict[str, Any]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _strip_fences(text: str) -> str:
+    """Alcuni modelli incorniciano il JSON in un blocco markdown."""
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+    body = text.split("```")
+    return body[1].removeprefix("json").strip() if len(body) > 1 else text
+
+
+def _openai_compat_report(
+    analysis: dict[str, Any], history: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    base_url = os.getenv("COACH_BASE_URL", "").strip().rstrip("/")
+    api_key = os.getenv("COACH_API_KEY", "").strip()
+    model = os.getenv("COACH_MODEL", "").strip()
+    timeout = float(os.getenv("COACH_TIMEOUT", "120"))
+    if not model:
+        raise ValueError("COACH_MODEL non impostato")
+
+    compact = _compact_analysis(analysis, history)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Analizza questo giro e dammi il piano di lavoro.\n\n"
+                + json.dumps(compact, ensure_ascii=False, sort_keys=True)
+            ),
+        },
+    ]
+    base = {"model": model, "messages": messages, "temperature": 0.2}
+
+    # Degradazione progressiva: non tutti i provider supportano lo stesso
+    # livello di vincolo sull'output. Si parte dal piu' stretto.
+    attempts: list[dict[str, Any]] = [
+        {
+            **base,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "coach_report",
+                    "strict": True,
+                    "schema": _schema_without_limits(REPORT_SCHEMA),
+                },
+            },
+        },
+        {**base, "response_format": {"type": "json_object"}},
+        base,
+    ]
+
+    last_error: Exception | None = None
+    for i, payload in enumerate(attempts):
+        try:
+            data = _post_json(f"{base_url}/chat/completions", payload, api_key, timeout)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[:300]
+            last_error = RuntimeError(f"HTTP {exc.code}: {body}")
+            if exc.code == 400 and i < len(attempts) - 1:
+                log.info("Coach: response_format non accettato, riprovo piu' permissivo")
+                continue
+            raise last_error from exc
+
+        text = _strip_fences(data["choices"][0]["message"]["content"] or "")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            if i < len(attempts) - 1:
+                log.info("Coach: risposta non JSON, riprovo con un vincolo piu' stretto")
+                continue
+            raise
+        usage = data.get("usage") or {}
+        log.info(
+            "Coach: %s (%s) in=%s out=%s",
+            model, base_url,
+            usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"),
+        )
+        return parsed
+
+    raise last_error or RuntimeError("nessuna risposta utilizzabile")
+
+
+# --------------------------------------------------------------------------- #
 # Chiamata al modello
 # --------------------------------------------------------------------------- #
 
@@ -347,8 +465,36 @@ def generate_coach_report(
     history: giri precedenti sulla stessa pista, cosi' il coach vede la progressione
     invece di ripartire da zero a ogni giro.
     """
+    if force_heuristic:
+        return _heuristic_report(analysis)
+
+    # Backend generico (Google AI Studio, OpenRouter, Groq, Ollama...): se
+    # COACH_BASE_URL e' configurato ha la precedenza su Anthropic.
+    if os.getenv("COACH_BASE_URL", "").strip():
+        try:
+            parsed = _openai_compat_report(analysis, history)
+            parsed["source"] = "openai_compat"
+            parsed["model"] = os.getenv("COACH_MODEL", "")
+            local = _heuristic_report(analysis)
+            for key in ("setup", "trajectory", "driving"):
+                parsed.setdefault(key, [])
+            if not parsed.get("setup"):
+                parsed["setup"] = local["setup"]
+            parsed.setdefault("summary", local["summary"])
+            return parsed
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            IndexError,
+        ) as exc:
+            log.warning("Coach: backend esterno non disponibile — %s", exc)
+            return _fallback(analysis, f"AI esterna non disponibile: {str(exc)[:140]}")
+
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if force_heuristic or not api_key:
+    if not api_key:
         return _heuristic_report(analysis)
 
     import anthropic

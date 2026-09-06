@@ -1,5 +1,11 @@
 import type { Tip } from "./types";
 
+function sourceLabel(source: string) {
+  if (source === "anthropic") return "AI Anthropic";
+  if (source === "heuristic") return "Analisi locale";
+  return "AI esterna";
+}
+
 function severityClass(s?: string) {
   if (s === "high") return "sev-high";
   if (s === "low") return "sev-low";
@@ -58,7 +64,7 @@ export function CoachPanels({ summary, setup, trajectory, driving, source, warni
         <p className="eyebrow">Race engineer</p>
         <h2>{summary || "Analisi in corso…"}</h2>
         <div className="meta-row">
-          {source ? <span className="pill">{source === "anthropic" ? "AI Anthropic" : "Analisi locale"}</span> : null}
+          {source ? <span className="pill">{sourceLabel(source)}</span> : null}
           {warning ? <span className="pill warn">{warning}</span> : null}
         </div>
         {metrics ? (
