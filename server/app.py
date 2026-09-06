@@ -430,7 +430,18 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         electronics=electronics,
         physics=physics,
     )
-    report = generate_coach_report(analysis, force_heuristic=req.force_heuristic)
+    history = [
+        {
+            "lap_number": r.get("lap_number"),
+            "lap_time_ms": r.get("lap_time_ms"),
+            "valid": bool(r.get("valid")),
+        }
+        for r in hub.db.list_laps(track=track, limit=6)
+        if r.get("id") != req.lap_id and r.get("lap_time_ms")
+    ]
+    report = generate_coach_report(
+        analysis, force_heuristic=req.force_heuristic, history=history
+    )
     return {"analysis": analysis, "coach": report, "electronics": electronics}
 
 

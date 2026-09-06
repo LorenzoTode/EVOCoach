@@ -1,4 +1,4 @@
-﻿"""Precise Assetto Corsa EVO setup menu instructions from live telemetry."""
+"""Precise Assetto Corsa EVO setup menu instructions from live telemetry."""
 
 from __future__ import annotations
 

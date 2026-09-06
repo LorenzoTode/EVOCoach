@@ -1,33 +1,126 @@
-﻿"""Anthropic-backed coaching with local heuristic fallback."""
+"""Anthropic-backed coaching with local heuristic fallback."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
-SYSTEM_PROMPT = """Sei un race engineer di Assetto Corsa EVO.
-Rispondi SOLO in JSON valido (niente markdown) con questa forma:
-{
-  "summary": "1-2 frasi sul giro",
-  "setup": [{
-    "severity":"high|medium|low",
-    "title":"TC 3 -> 4",
-    "menu":"Setup -> Electronics -> Traction Control",
-    "parameter":"TC",
-    "current":3,
-    "target":4,
-    "action":"Aumenta TC da 3 a 4 (+1)",
-    "detail":"Istruzione precisa da fare nel menu AC EVO",
-    "corners":[]
-  }],
-  "trajectory": [{"severity":"high|medium|low","title":"...","detail":"...","corner":"...","npos":0.0}],
-  "driving": [{"severity":"high|medium|low","title":"...","detail":"..."}]
-}
-Nella sezione setup dai SOLO istruzioni operative del menu AC EVO (Electronics, Differenziale, Ammortizzatori, Gomme)
-con valore attuale -> nuovo valore. Max 5 setup, 4 trajectory, 4 driving. Italiano, tecnico, niente filler.
+log = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "claude-opus-5"
+
+SYSTEM_PROMPT = """Sei il race engineer di un pilota su Assetto Corsa EVO. Analizzi la telemetria
+di un giro confrontato con un giro di riferimento e dai istruzioni operative.
+
+COME LEGGERE I DATI
+- npos: posizione sul giro, 0.0 = linea del traguardo, 1.0 = fine giro.
+- final_delta_ms: delta totale in millisecondi. POSITIVO = il pilota e' PIU' LENTO del riferimento.
+- loss_zones: i tratti dove il pilota sta attivamente perdendo tempo. loss_ms e' il tempo perso
+  in quel solo tratto. Sono ordinate dalla perdita maggiore: qui c'e' il tempo da recuperare.
+- corners: curve ordinate per tempo perso, con velocita' in ingresso / apice / uscita
+  confrontate con il riferimento (speed_gap_kmh negativo = il pilota e' piu' lento).
+- metrics: overlap_pct = % di giro con gas e freno insieme; coast_pct = % di giro in rilascio
+  senza gas ne' freno; max_slip = picco di slittamento pneumatici (0-1, sopra 0.35 e' grip perso).
+- electronics: i valori ATTUALI letti dal gioco, con il range legale per questa vettura.
+- candidate_setup_changes: modifiche gia' calcolate da euristiche locali. Sono CANDIDATE,
+  non verita': selezionale, scartale o correggile in base ai dati.
+
+REGOLE NON NEGOZIABILI
+1. Ogni valore che proponi deve stare dentro il range legale indicato in electronics.
+   Se il range non e' noto, non proporre quel parametro.
+2. "current" deve essere il valore realmente letto dal gioco, mai inventato.
+3. Ogni "detail" deve citare un numero preso dai dati (ms persi, km/h di gap, %, slip).
+   Un consiglio senza numero e' inutile: scartalo.
+4. Un problema di tecnica non si risolve con l'assetto. Se overlap_pct, coast_pct o max_slip
+   indicano un errore di guida, mettilo in "driving" e NON compensarlo con l'elettronica.
+5. Cambia un parametro alla volta per area. Non proporre TC e diff e ammortizzatori insieme
+   per lo stesso sintomo: il pilota non saprebbe cosa ha funzionato.
+6. Se il pilota e' piu' veloce del riferimento (final_delta_ms negativo), dillo e concentrati
+   su dove resta margine, non inventare problemi.
+
+PRIORITA'
+Ordina per tempo recuperabile. Una curva da 300 ms viene prima di una da 40 ms.
+Se una singola loss_zone vale piu' del 40% del delta totale, il summary deve nominarla.
+
+STILE
+Italiano tecnico, seconda persona singolare, niente giri di parole, niente incoraggiamenti.
+Massimo 5 setup, 4 trajectory, 4 driving. Meglio 2 consigli precisi che 5 generici.
 """
 
+_TIP_PROPS = {
+    "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+    "title": {"type": "string", "description": "Etichetta breve, max 60 caratteri"},
+    "detail": {"type": "string", "description": "Spiegazione con almeno un numero dai dati"},
+}
+
+REPORT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "1-2 frasi sul giro: delta totale e dove si perde di piu'",
+        },
+        "setup": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "properties": {
+                    **_TIP_PROPS,
+                    "menu": {
+                        "type": "string",
+                        "description": "Percorso nel menu AC EVO, es. 'Setup -> Electronics -> Traction Control'",
+                    },
+                    "parameter": {"type": "string"},
+                    "current": {"type": "string", "description": "Valore attuale letto dal gioco"},
+                    "target": {"type": "string", "description": "Nuovo valore, dentro il range legale"},
+                    "action": {
+                        "type": "string",
+                        "description": "Istruzione operativa, es. 'Aumenta TC da 3 a 4 (+1)'",
+                    },
+                },
+                "required": [
+                    "severity", "title", "detail", "menu",
+                    "parameter", "current", "target", "action",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "trajectory": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    **_TIP_PROPS,
+                    "corner": {"type": "string"},
+                    "npos": {"type": "number", "description": "Posizione sul giro, 0.0-1.0"},
+                },
+                "required": ["severity", "title", "detail", "corner", "npos"],
+                "additionalProperties": False,
+            },
+        },
+        "driving": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": _TIP_PROPS,
+                "required": ["severity", "title", "detail"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["summary", "setup", "trajectory", "driving"],
+    "additionalProperties": False,
+}
+
+
+# --------------------------------------------------------------------------- #
+# Fallback locale
+# --------------------------------------------------------------------------- #
 
 def _heuristic_report(analysis: dict[str, Any]) -> dict[str, Any]:
     final = analysis.get("delta", {}).get("final_delta_ms", 0.0)
@@ -86,72 +179,248 @@ def _heuristic_report(analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
-    segs = analysis.get("delta", {}).get("segments", [])
-    step = max(1, len(segs) // 40)
-    slim_delta = [
-        {"npos": round(s["npos"], 3), "delta_ms": round(s["delta_ms"], 1)}
-        for s in segs[::step]
-    ]
-    return {
-        "meta": analysis.get("meta", {}),
-        "final_delta_ms": analysis.get("delta", {}).get("final_delta_ms"),
-        "corners": analysis.get("corners", [])[:8],
+# --------------------------------------------------------------------------- #
+# Costruzione del payload per il modello
+# --------------------------------------------------------------------------- #
+
+# Prefissi delle chiavi electronics: valore attuale -> (min, max)
+_RANGE_SUFFIXES = ("_min", "_max")
+
+
+def _electronics_with_ranges(electronics: dict[str, Any]) -> dict[str, Any]:
+    """Appaia ogni valore col suo range legale, cosi' il modello non puo' uscirne."""
+    out: dict[str, Any] = {}
+    for key, value in electronics.items():
+        if key.endswith(_RANGE_SUFFIXES):
+            continue
+        entry: dict[str, Any] = {"current": value}
+        lo = electronics.get(f"{key}_min")
+        hi = electronics.get(f"{key}_max")
+        if lo is not None:
+            entry["min"] = lo
+        if hi is not None:
+            entry["max"] = hi
+        out[key.removeprefix("electronics_")] = entry
+    return out
+
+
+def _loss_zones(segments: list[dict[str, Any]], top_n: int = 5) -> list[dict[str, Any]]:
+    """Tratti contigui in cui il delta peggiora: dove il tempo si perde davvero.
+
+    Sostituisce il campionamento uniforme della curva delta, che puo' saltare
+    esattamente la staccata in cui si perde il tempo.
+    """
+    if not segments:
+        return []
+
+    zones: list[dict[str, Any]] = []
+    start: int | None = None
+    for i, seg in enumerate(segments):
+        losing = (seg.get("instant_ms") or 0.0) > 0
+        if losing and start is None:
+            start = i
+        elif not losing and start is not None:
+            zones.append((start, i - 1))
+            start = None
+    if start is not None:
+        zones.append((start, len(segments) - 1))
+
+    scored = []
+    for a, b in zones:
+        loss = (segments[b].get("delta_ms") or 0.0) - (segments[a].get("delta_ms") or 0.0)
+        if loss < 15:  # sotto i 15 ms e' rumore
+            continue
+        window = segments[a : b + 1]
+        speeds = [(s["speed"], s["speed_ref"]) for s in window
+                  if s.get("speed") is not None and s.get("speed_ref") is not None]
+        gap = (sum(c - r for c, r in speeds) / len(speeds)) if speeds else None
+        brakes = [s["brake"] for s in window if s.get("brake") is not None]
+        scored.append(
+            {
+                "from_npos": round(segments[a]["npos"], 3),
+                "to_npos": round(segments[b]["npos"], 3),
+                "loss_ms": round(loss, 0),
+                "speed_gap_kmh": round(gap, 1) if gap is not None else None,
+                "max_brake": round(max(brakes), 2) if brakes else None,
+            }
+        )
+    scored.sort(key=lambda z: z["loss_ms"], reverse=True)
+    return scored[:top_n]
+
+
+def _corner_phases(
+    segments: list[dict[str, Any]], corners: list[dict[str, Any]], top_n: int = 6
+) -> list[dict[str, Any]]:
+    """Per ogni curva: ingresso / apice / uscita, confrontati col riferimento.
+
+    Dice al modello *perche'* si perde in curva, non solo quanto.
+    """
+    out = []
+    for corner in corners[:top_n]:
+        start, end = corner.get("start"), corner.get("end")
+        if start is None or end is None:
+            continue
+        window = [s for s in segments if start <= s["npos"] <= end]
+        if len(window) < 4:
+            continue
+
+        def _phase(chunk: list[dict[str, Any]]) -> dict[str, Any]:
+            cur = [s["speed"] for s in chunk if s.get("speed") is not None]
+            ref = [s["speed_ref"] for s in chunk if s.get("speed_ref") is not None]
+            return {
+                "speed_kmh": round(sum(cur) / len(cur), 1) if cur else None,
+                "ref_kmh": round(sum(ref) / len(ref), 1) if ref else None,
+            }
+
+        third = max(1, len(window) // 3)
+        apex_i = min(
+            range(len(window)),
+            key=lambda i: window[i]["speed"] if window[i].get("speed") is not None else 1e9,
+        )
+        out.append(
+            {
+                "name": corner.get("name"),
+                "loss_ms": round(corner.get("loss_ms", 0.0), 0),
+                "entry": _phase(window[:third]),
+                "apex": _phase(window[max(0, apex_i - 1) : apex_i + 2]),
+                "exit": _phase(window[-third:]),
+                "npos": round(corner.get("mid_npos", (start + end) / 2), 3),
+            }
+        )
+    return out
+
+
+def _compact_analysis(
+    analysis: dict[str, Any], history: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    segments = analysis.get("delta", {}).get("segments", [])
+    electronics = (analysis.get("meta", {}) or {}).get("electronics") or {}
+
+    payload: dict[str, Any] = {
+        "meta": {k: v for k, v in (analysis.get("meta") or {}).items() if k != "electronics"},
+        "final_delta_ms": round(analysis.get("delta", {}).get("final_delta_ms") or 0.0, 0),
+        "loss_zones": _loss_zones(segments),
+        "corners": _corner_phases(segments, analysis.get("corners", [])),
         "metrics": analysis.get("metrics", {}),
-        "setup_signals": analysis.get("setup", [])[:6],
-        "trajectory_signals": analysis.get("trajectory", [])[:5],
+        "electronics": _electronics_with_ranges(electronics),
+        "candidate_setup_changes": analysis.get("setup", [])[:6],
         "driving_signals": analysis.get("driving", [])[:5],
-        "delta_sparklines": slim_delta,
+        "trajectory_signals": analysis.get("trajectory", [])[:5],
     }
+    if history:
+        payload["previous_laps"] = history[:5]
+    return payload
 
 
-def generate_coach_report(analysis: dict[str, Any], *, force_heuristic: bool = False) -> dict[str, Any]:
+# --------------------------------------------------------------------------- #
+# Chiamata al modello
+# --------------------------------------------------------------------------- #
+
+_client = None
+
+
+def _get_client(api_key: str):
+    global _client
+    if _client is None:
+        import anthropic
+
+        _client = anthropic.Anthropic(api_key=api_key)
+    return _client
+
+
+def _fallback(analysis: dict[str, Any], warning: str | None = None) -> dict[str, Any]:
+    report = _heuristic_report(analysis)
+    report["source"] = "heuristic"
+    if warning:
+        report["warning"] = warning
+    return report
+
+
+def generate_coach_report(
+    analysis: dict[str, Any],
+    *,
+    force_heuristic: bool = False,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Report di coaching. Usa Claude se c'e' una API key, altrimenti l'euristica locale.
+
+    history: giri precedenti sulla stessa pista, cosi' il coach vede la progressione
+    invece di ripartire da zero a ogni giro.
+    """
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if force_heuristic or not api_key:
         return _heuristic_report(analysis)
 
-    try:
-        import anthropic
+    import anthropic
 
-        client = anthropic.Anthropic(api_key=api_key)
-        compact = _compact_analysis(analysis)
+    try:
+        client = _get_client(api_key)
+        compact = _compact_analysis(analysis, history)
 
         message = client.messages.create(
-            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-            max_tokens=1400,
+            model=os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL),
+            max_tokens=16000,
             system=SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
+            output_config={
+                "effort": "high",
+                "format": {"type": "json_schema", "schema": REPORT_SCHEMA},
+            },
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        "Analizza questo confronto telemetrico. "
-                        "Per l'assetto usa i valori electronics gia letti da AC EVO e proponi "
-                        "modifiche menu precise (attuale -> target):\n"
-                        + json.dumps(compact, ensure_ascii=False)
+                        "Analizza questo giro e dammi il piano di lavoro.\n\n"
+                        + json.dumps(compact, ensure_ascii=False, sort_keys=True)
                     ),
                 }
             ],
         )
-        text = ""
-        for block in message.content:
-            if getattr(block, "type", None) == "text":
-                text += block.text
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
+
+        if message.stop_reason == "refusal":
+            detail = getattr(message.stop_details, "explanation", None) or "nessun dettaglio"
+            log.warning("Coach: richiesta rifiutata dal modello (%s)", detail)
+            return _fallback(analysis, "Il modello ha rifiutato la richiesta: uso analisi locale.")
+
+        if message.stop_reason == "max_tokens":
+            log.warning("Coach: risposta troncata a max_tokens, alzare il limite")
+            return _fallback(analysis, "Risposta AI troncata: uso analisi locale.")
+
+        log.info(
+            "Coach: %s in=%d out=%d cache_read=%d",
+            message.model,
+            message.usage.input_tokens,
+            message.usage.output_tokens,
+            message.usage.cache_read_input_tokens or 0,
+        )
+
+        # output_config.format garantisce JSON valido conforme allo schema
+        text = next(b.text for b in message.content if b.type == "text")
         parsed = json.loads(text)
         parsed["source"] = "anthropic"
-        for key in ("setup", "trajectory", "driving"):
-            parsed.setdefault(key, [])
-        local = _heuristic_report(analysis)
-        if not parsed.get("setup") or not any(t.get("action") or t.get("menu") for t in parsed["setup"]):
-            parsed["setup"] = local["setup"]
-        parsed.setdefault("summary", local["summary"])
+
+        # L'euristica resta la rete di sicurezza sui setup: se il modello non ha
+        # prodotto istruzioni operative, si usano quelle calcolate localmente.
+        if not parsed.get("setup"):
+            parsed["setup"] = _heuristic_report(analysis)["setup"]
         return parsed
-    except Exception as exc:
-        report = _heuristic_report(analysis)
-        report["source"] = "heuristic"
-        report["warning"] = f"AI non disponibile ({exc.__class__.__name__}): uso analisi locale."
-        return report
+
+    except anthropic.AuthenticationError:
+        log.error("Coach: ANTHROPIC_API_KEY non valida")
+        return _fallback(analysis, "API key Anthropic non valida: uso analisi locale.")
+    except anthropic.RateLimitError:
+        log.warning("Coach: rate limit Anthropic")
+        return _fallback(analysis, "Limite di richieste raggiunto: uso analisi locale.")
+    except anthropic.BadRequestError as exc:
+        # Tipicamente: parametro non supportato dal modello configurato.
+        log.error("Coach: richiesta rifiutata dall'API — %s", exc.message)
+        return _fallback(analysis, f"Richiesta AI non valida: {exc.message[:120]}")
+    except anthropic.APIConnectionError:
+        log.warning("Coach: nessuna connessione all'API Anthropic")
+        return _fallback(analysis, "Nessuna connessione all'AI: uso analisi locale.")
+    except anthropic.APIStatusError as exc:
+        log.error("Coach: errore API %s", exc.status_code)
+        return _fallback(analysis, f"Errore AI ({exc.status_code}): uso analisi locale.")
+    except (json.JSONDecodeError, StopIteration, KeyError, ValueError) as exc:
+        log.exception("Coach: risposta AI non interpretabile")
+        return _fallback(analysis, f"Risposta AI non valida ({type(exc).__name__}): uso analisi locale.")
