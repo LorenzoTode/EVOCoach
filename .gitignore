@@ -1,0 +1,18 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+*.db
+data/
+.idea/
+.vscode/
+web/node_modules/
+
+# web/dist e' versionato di proposito: il server FastAPI lo serve a runtime,
+# e cosi' l'app gira senza avere Node installato. Va ricostruito e ricommittato
+# a ogni modifica di web/src (npm run build).
+
+# cache del compilatore TypeScript, non e' un sorgente
+*.tsbuildinfo
