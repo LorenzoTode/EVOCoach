@@ -38,6 +38,11 @@ HZ = float(os.getenv("TELEMETRY_HZ", "15"))
 # cambio sessione. Il gioco puo' comunque emettere un "last lap time".
 MIN_LAP_MS = 15_000
 
+# Oltre questa durata non e' piu' un giro: auto ferma ai box, gioco in pausa,
+# menu aperto. Il cronometro del gioco continua a correre e i campioni si
+# accumulerebbero senza fine.
+MAX_LAP_MS = 10 * 60 * 1000
+
 ELECTRONICS_KEYS = (
     "electronics_tc_level",
     "electronics_tc_level_min",
@@ -506,6 +511,14 @@ class LiveHub:
         if self._crossed_line(frame):
             self._close_lap(frame)
 
+        # Giro abbandonato: si butta il buffer invece di scriverlo nel
+        # database e di tenerlo in memoria per tutta la sessione.
+        t_ms = frame.get("t_ms") or 0
+        if t_ms > MAX_LAP_MS and self._lap_samples:
+            self._lap_samples = []
+            self._lap_valid = False
+            return
+
         self._lap_samples.append(sample)
 
 
@@ -699,10 +712,13 @@ def coach(req: CoachRequest) -> dict[str, Any]:
     if ref_id == req.lap_id:
         # Il giro piu' veloce della pista e' proprio quello analizzato: confrontarlo
         # con se stesso darebbe delta zero ovunque. Si prende il migliore fra gli altri.
+        # Solo giri validi: senza questo filtro il ripiego pesca il frammento
+        # piu' breve in assoluto — un'uscita di 3 secondi batte qualunque giro
+        # vero — e il delta che ne esce e' privo di senso.
         others = [
             r
             for r in hub.db.list_laps(track=lap.get("track"))
-            if r["id"] != req.lap_id and r.get("lap_time_ms")
+            if r["id"] != req.lap_id and r.get("lap_time_ms") and r.get("valid")
         ]
         ref_id = min(others, key=lambda r: r["lap_time_ms"])["id"] if others else None
     if ref_id is None:

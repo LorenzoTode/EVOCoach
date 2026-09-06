@@ -338,6 +338,11 @@ def _schema_without_limits(node: Any) -> Any:
     return node
 
 
+# Sovraccarico del provider, non un errore della richiesta: vale la pena
+# riprovare invece di ripiegare subito sull'analisi locale.
+_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
 def _post_json(url: str, payload: dict[str, Any], api_key: str, timeout: float) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -399,17 +404,29 @@ def _openai_compat_report(
         base,
     ]
 
+    import time
+
     last_error: Exception | None = None
     for i, payload in enumerate(attempts):
-        try:
-            data = _post_json(f"{base_url}/chat/completions", payload, api_key, timeout)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", "replace")[:300]
-            last_error = RuntimeError(f"HTTP {exc.code}: {body}")
-            if exc.code == 400 and i < len(attempts) - 1:
-                log.info("Coach: response_format non accettato, riprovo piu' permissivo")
-                continue
-            raise last_error from exc
+        data = None
+        for attempt in range(3):
+            try:
+                data = _post_json(f"{base_url}/chat/completions", payload, api_key, timeout)
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", "replace")[:300]
+                last_error = RuntimeError(f"HTTP {exc.code}: {body}")
+                if exc.code in _RETRY_STATUSES and attempt < 2:
+                    delay = 2**attempt
+                    log.info("Coach: %s dal provider, riprovo fra %ds", exc.code, delay)
+                    time.sleep(delay)
+                    continue
+                if exc.code == 400 and i < len(attempts) - 1:
+                    log.info("Coach: response_format non accettato, riprovo piu' permissivo")
+                    break
+                raise last_error from exc
+        if data is None:
+            continue
 
         text = _strip_fences(data["choices"][0]["message"]["content"] or "")
         try:

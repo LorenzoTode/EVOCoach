@@ -167,11 +167,14 @@ export default function App() {
         ? data?.analysis.delta.segments || []
         : [];
 
-  const deltaMs = deltaReady
+  const rawDelta = deltaReady
     ? (live?.delta_ms ??
       liveSegments[Math.floor(npos * Math.max(liveSegments.length, 1))]?.delta_ms ??
       data?.analysis.delta.final_delta_ms)
     : null;
+  // Fermi ai box il cronometro del gioco continua a correre e il delta diventa
+  // di minuti: non e' un confronto fra giri, e mostrarlo confonde e basta.
+  const deltaMs = rawDelta != null && Math.abs(rawDelta) > 60_000 ? null : rawDelta;
 
   const corners = live?.corners?.length ? live.corners : data?.corners || [];
 
@@ -229,7 +232,7 @@ export default function App() {
               <div>
                 <span>Delta EVO</span>
                 <strong className={(deltaMs ?? 0) > 0 ? "bad" : (deltaMs ?? 0) < 0 ? "ok" : ""}>
-                  {deltaReady ? formatDelta(deltaMs) : "1° giro"}
+                  {!deltaReady ? "1° giro" : deltaMs == null ? "—" : formatDelta(deltaMs)}
                 </strong>
               </div>
               <div>
