@@ -16,3 +16,11 @@ web/node_modules/
 
 # cache del compilatore TypeScript, non e' un sorgente
 *.tsbuildinfo
+
+# Prodotti di PyInstaller. La barra iniziale limita la regola alla radice:
+# senza, "dist/" prenderebbe anche web/dist, che invece e' versionato apposta
+# per far girare l'app senza Node.
+/build/
+/dist/
+*.spec
+*.exe
