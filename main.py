@@ -61,9 +61,24 @@ def list_models() -> int:
             print(f"Provider irraggiungibile: {exc.reason}", file=sys.stderr)
             return 1
         names = sorted(m.get("id", "?") for m in data.get("data", []))
-        print(f"Modelli disponibili su {base_url} ({len(names)}):\n")
-        for name in names:
-            print(f"  COACH_MODEL={name}")
+        # Euristica sui nomi: i cataloghi mescolano modelli di testo con
+        # immagini, audio e video, che qui non servono. Non li nascondo,
+        # li metto in fondo — la regola e' un'ipotesi, non una garanzia.
+        other_hints = (
+            "image", "tts", "audio", "video", "embedding", "transcribe",
+            "live", "robotics", "lyria", "veo", "banana", "computer-use", "aqa",
+        )
+        text = [n for n in names if not any(h in n for h in other_hints)]
+        other = [n for n in names if n not in text]
+
+        print(f"Modelli su {base_url} ({len(names)} in totale)\n")
+        print("Adatti al coach (testo):\n")
+        for name in text:
+            alias = "   <- alias, non invecchia" if name.endswith("-latest") else ""
+            print(f"  COACH_MODEL={name}{alias}")
+        if other:
+            print(f"\nProbabilmente non adatti — immagini, audio, video, embedding ({len(other)}):\n")
+            print("  " + ", ".join(n.removeprefix("models/") for n in other))
         return 0
 
     if os.getenv("ANTHROPIC_API_KEY", "").strip():
