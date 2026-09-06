@@ -108,6 +108,36 @@ def _extract_electronics(graphics: dict[str, Any]) -> dict[str, Any]:
     return {k: graphics.get(k) for k in ELECTRONICS_KEYS if graphics.get(k) is not None}
 
 
+# Cio' che serve per capire perche' il gioco invalida o non conta un giro.
+# Esposto da /api/debug/telemetry: e' la differenza fra sapere e indovinare.
+DIAG_KEYS = (
+    "session_current_lap", "completed_laps", "total_lap_count", "number_of_laps",
+    "current_lap_time_ms", "last_laptime_ms", "last_time_ms",
+    "best_laptime_ms", "best_time_ms",
+    "is_valid_lap", "is_invalid", "timing_is_invalid", "invalid_reasons",
+    "number_of_tyres_out", "penalty", "penalty_time",
+    "is_in_pit", "is_in_pit_box", "is_in_pit_lane",
+    "normalized_car_position", "normalized_position_source",
+    "session", "session_name", "session_phase", "status", "status_name",
+    "current_sector_index", "sector_count",
+)
+
+
+def _lap_counter(graphics: dict[str, Any]) -> int | None:
+    """Numero di giri completati.
+
+    session_current_lap puo' restare fermo a 0 per tutta la sessione (si vede
+    negli hotlap in singleplayer), mentre completed_laps incrementa. Si prende
+    il primo dei due che si comporta da contatore.
+    """
+    for key in ("completed_laps", "session_current_lap", "total_lap_count"):
+        value = graphics.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    completed = graphics.get("completed_laps")
+    return completed if isinstance(completed, int) else graphics.get("session_current_lap")
+
+
 def _lap_invalidated(graphics: dict[str, Any]) -> bool:
     """Il giro in corso e' stato invalidato dal gioco?
 
@@ -142,10 +172,10 @@ def snapshot_to_frame(snapshot: Any) -> dict[str, Any]:
         "connected": True,
         "track": s.get("track") or g.get("track") or "unknown",
         "car": g.get("car_model") or s.get("car_model") or "unknown",
-        "lap": g.get("session_current_lap"),
+        "lap": _lap_counter(g),
         "t_ms": g.get("current_lap_time_ms"),
         "best_ms": g.get("best_laptime_ms") or g.get("best_time_ms"),
-        "last_ms": g.get("last_time_ms"),
+        "last_ms": g.get("last_laptime_ms") or g.get("last_time_ms"),
         "npos": float(npos or 0.0),
         "speed": p.get("speed_kmh"),
         "gas": p.get("gas"),
@@ -161,7 +191,9 @@ def snapshot_to_frame(snapshot: Any) -> dict[str, Any]:
         "electronics": electronics,
         "lap_invalid": _lap_invalidated(g),
         "tyres_out": g.get("number_of_tyres_out"),
+        "in_pit": bool(g.get("is_in_pit") or g.get("is_in_pit_lane") or g.get("is_in_pit_box")),
         "session_name": g.get("session_name"),
+        "diag": {k: g.get(k) for k in DIAG_KEYS},
         "physics_setup": {
             "brake_bias": p.get("brake_bias"),
             "tyre_core_temp": p.get("tyre_core_temp") or p.get("tyre_temp"),
@@ -188,9 +220,14 @@ class LiveHub:
         self._task: asyncio.Task | None = None
         # Validita' del giro in corso: sticky, si azzera solo a giro nuovo.
         self._lap_valid = True
+        self._lap_had_pit = False
         self._valid_laps = 0
         self._invalid_laps = 0
         self._track: str | None = None
+        self._last_npos: float | None = None
+        self._last_reported_ms: int | None = None
+        self._last_diag: dict[str, Any] = {}
+        self._last_saved: dict[str, Any] | None = None
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -227,7 +264,38 @@ class LiveHub:
             elapsed = time.perf_counter() - started
             await asyncio.sleep(max(0.0, interval - elapsed))
 
+    def _crossed_line(self, frame: dict[str, Any]) -> bool:
+        """Il giro si e' appena chiuso?
+
+        Nessuno dei segnali del gioco e' affidabile da solo: in hotlap
+        singleplayer il contatore dei giri puo' restare fermo a 0 per tutta la
+        sessione. Se ne guardano tre, e ne basta uno.
+        """
+        npos = frame.get("npos")
+        lap = frame.get("lap")
+        last_ms = frame.get("last_ms")
+
+        first_frame = self._last_npos is None and self._last_lap_no is None
+        crossed = False
+        if not first_frame:
+            if isinstance(lap, int) and isinstance(self._last_lap_no, int) and lap > self._last_lap_no:
+                crossed = True
+            # Il gioco pubblica un tempo nuovo: un giro cronometrato e' finito.
+            if last_ms and last_ms != self._last_reported_ms:
+                crossed = True
+            # Traguardo tagliato: la posizione normalizzata torna indietro.
+            if npos is not None and self._last_npos is not None and npos + 0.5 < self._last_npos:
+                crossed = True
+
+        self._last_npos = npos if npos is not None else self._last_npos
+        if isinstance(lap, int):
+            self._last_lap_no = lap
+        if last_ms:
+            self._last_reported_ms = int(last_ms)
+        return crossed
+
     def _attach_map(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._last_diag = frame.pop("diag", None) or self._last_diag
         self.track_map.ingest(frame)
         frame["map"] = self.track_map.snapshot()
         frame["corners"] = _track_corners(frame.get("track"))
@@ -296,6 +364,9 @@ class LiveHub:
             "invalid_laps": self._invalid_laps,
             "current_lap_valid": self._lap_valid,
             "best_ms": frame.get("best_ms"),
+            # Perche' l'ultimo giro e' stato scartato: senza questo, "0 giri
+            # validi" dopo dieci giri e' un vicolo cieco.
+            "last_lap": self._last_saved,
         }
 
     def _reset_session(self, track: str | None) -> None:
@@ -304,9 +375,69 @@ class LiveHub:
         self._valid_laps = 0
         self._invalid_laps = 0
         self._lap_valid = True
+        self._lap_had_pit = False
         self._lap_samples = []
         self._last_lap_no = None
+        self._last_npos = None
+        self._last_reported_ms = None
+        self._last_saved = None
         self._session_id = None
+
+    def _close_lap(self, frame: dict[str, Any]) -> None:
+        """Archivia il giro appena chiuso e riparte pulito."""
+        samples = self._lap_samples
+        self._lap_samples = []
+        was_valid, had_pit = self._lap_valid, self._lap_had_pit
+        self._lap_valid, self._lap_had_pit = True, False
+
+        if len(samples) < 30:
+            return
+
+        positions = [s["npos"] for s in samples if s.get("npos") is not None]
+        span = (max(positions) - min(positions)) if positions else 0.0
+        lap_time = int(frame.get("last_ms") or samples[-1].get("t_ms") or 0) or None
+
+        # Quattro modi di non essere un giro buono. Ognuno da solo basta.
+        reasons = []
+        if not was_valid:
+            reasons.append("invalidato dal gioco")
+        if had_pit:
+            reasons.append("passaggio dai box")
+        if not lap_time or lap_time < MIN_LAP_MS:
+            reasons.append("tempo assente o troppo breve")
+        if span < 0.7:
+            reasons.append(f"giro parziale (copre il {span * 100:.0f}% del tracciato)")
+        valid = not reasons
+
+        if self._session_id is None:
+            self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
+
+        lap_id = self.db.save_lap(
+            self._session_id,
+            lap_number=self._last_lap_no,
+            lap_time_ms=lap_time,
+            track=frame.get("track"),
+            car=frame.get("car"),
+            samples=samples,
+            valid=valid,
+            meta={
+                "electronics": self._last_electronics,
+                "physics_setup": self._last_physics_setup,
+                "invalid_reasons": reasons,
+            },
+        )
+        if valid:
+            self._valid_laps += 1
+        else:
+            self._invalid_laps += 1
+        self._last_saved = {
+            "lap_id": lap_id,
+            "lap_time_ms": lap_time,
+            "valid": valid,
+            "reasons": reasons,
+            "samples": len(samples),
+            "npos_span": round(span, 3),
+        }
 
     def _ingest_live(self, frame: dict[str, Any]) -> None:
         track = frame.get("track")
@@ -315,7 +446,6 @@ class LiveHub:
         elif track and not self._track:
             self._track = track
 
-        lap_no = frame.get("lap")
         sample = {
             "t_ms": frame.get("t_ms") or 0,
             "npos": frame.get("npos") or 0.0,
@@ -336,42 +466,15 @@ class LiveHub:
         if self._session_id is None:
             self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
 
-        if self._last_lap_no is None:
-            self._last_lap_no = lap_no
-
         # Un giro sporcato resta sporco fino alla fine, anche se il gioco
         # rialza il flag sul traguardo.
         if frame.get("lap_invalid"):
             self._lap_valid = False
+        if frame.get("in_pit"):
+            self._lap_had_pit = True
 
-        if lap_no is not None and self._last_lap_no is not None and lap_no != self._last_lap_no:
-            if len(self._lap_samples) > 30:
-                # Il tempo autoritativo e' quello che il gioco pubblica a giro
-                # chiuso; l'ultimo campione e' solo un ripiego.
-                game_time = frame.get("last_ms")
-                fallback = self._lap_samples[-1].get("t_ms")
-                lap_time = int(game_time or fallback or 0) or None
-                valid = bool(self._lap_valid and lap_time and lap_time >= MIN_LAP_MS)
-                self.db.save_lap(
-                    self._session_id,
-                    lap_number=self._last_lap_no,
-                    lap_time_ms=lap_time,
-                    track=frame.get("track"),
-                    car=frame.get("car"),
-                    samples=self._lap_samples,
-                    valid=valid,
-                    meta={
-                        "electronics": self._last_electronics,
-                        "physics_setup": self._last_physics_setup,
-                    },
-                )
-                if valid:
-                    self._valid_laps += 1
-                else:
-                    self._invalid_laps += 1
-            self._lap_samples = []
-            self._last_lap_no = lap_no
-            self._lap_valid = True
+        if self._crossed_line(frame):
+            self._close_lap(frame)
 
         self._lap_samples.append(sample)
 
@@ -443,6 +546,32 @@ def list_laps(track: str | None = None, include_invalid: bool = False) -> list[d
 @app.get("/api/session")
 def session() -> dict[str, Any]:
     return hub.session_state(hub.latest)
+
+
+@app.get("/api/debug/telemetry")
+def debug_telemetry() -> dict[str, Any]:
+    """Cosa dice il gioco e cosa ne capisce l'app.
+
+    Serve quando i giri non vengono contati: mette a confronto i campi grezzi
+    della memoria condivisa con lo stato interno, senza dover indovinare.
+    """
+    return {
+        "gioco": hub._last_diag,
+        "app": {
+            "mode": hub.mode,
+            "track": hub._track,
+            "giro_corrente_valido": hub._lap_valid,
+            "giro_passato_dai_box": hub._lap_had_pit,
+            "campioni_giro_in_corso": len(hub._lap_samples),
+            "ultimo_numero_giro": hub._last_lap_no,
+            "ultimo_npos": hub._last_npos,
+            "ultimo_tempo_pubblicato": hub._last_reported_ms,
+            "giri_validi": hub._valid_laps,
+            "giri_scartati": hub._invalid_laps,
+        },
+        "ultimo_giro_archiviato": hub._last_saved,
+        "giri_nel_database": hub.db.list_laps(limit=10),
+    }
 
 
 @app.get("/api/laps/{lap_id}")

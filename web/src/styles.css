@@ -843,3 +843,13 @@ body,
     padding-bottom: 16px;
   }
 }
+
+.waiting-why {
+  margin: 2px 0 0;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #ffd08a;
+  background: rgba(217, 119, 6, 0.1);
+  border: 1px solid rgba(217, 119, 6, 0.28);
+}

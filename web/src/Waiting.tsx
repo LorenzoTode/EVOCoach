@@ -14,6 +14,7 @@ export function Waiting({ session }: Props) {
   const connected = state !== "waiting_game";
   const valid = session?.valid_laps ?? 0;
   const invalid = session?.invalid_laps ?? 0;
+  const last = session?.last_lap;
 
   return (
     <div className="screen waiting">
@@ -69,6 +70,12 @@ export function Waiting({ session }: Props) {
               <span className="tally warn">giro in corso invalidato</span>
             ) : null}
           </div>
+        ) : null}
+
+        {last && !last.valid && last.reasons.length ? (
+          <p className="waiting-why">
+            Ultimo giro scartato: {last.reasons.join(" · ")}
+          </p>
         ) : null}
       </div>
     </div>

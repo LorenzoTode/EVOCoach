@@ -48,6 +48,14 @@ export type SessionState = {
   invalid_laps: number;
   current_lap_valid: boolean;
   best_ms?: number | null;
+  last_lap?: {
+    lap_id: number;
+    lap_time_ms: number | null;
+    valid: boolean;
+    reasons: string[];
+    samples: number;
+    npos_span: number;
+  } | null;
 };
 
 export type LapRow = {
