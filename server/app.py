@@ -409,6 +409,15 @@ def coach(req: CoachRequest) -> dict[str, Any]:
     if ref_id is None:
         best = hub.db.best_lap(lap.get("track"))
         ref_id = best["id"] if best else None
+    if ref_id == req.lap_id:
+        # Il giro piu' veloce della pista e' proprio quello analizzato: confrontarlo
+        # con se stesso darebbe delta zero ovunque. Si prende il migliore fra gli altri.
+        others = [
+            r
+            for r in hub.db.list_laps(track=lap.get("track"))
+            if r["id"] != req.lap_id and r.get("lap_time_ms")
+        ]
+        ref_id = min(others, key=lambda r: r["lap_time_ms"])["id"] if others else None
     if ref_id is None:
         return {"error": "no_reference"}
     reference = hub.db.get_samples(ref_id)
