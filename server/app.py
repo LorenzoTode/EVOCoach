@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from analysis.delta import build_analysis_payload
+from analysis.profile import build_driver_profile, lap_metrics
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
@@ -363,6 +364,24 @@ class LiveHub:
         frame["session"] = self.session_state(frame)
         return frame
 
+    def driver_profile(self, track: str | None = None) -> dict[str, Any]:
+        """Profilo costruito sui giri validi gia' in archivio, dal piu' recente."""
+        import json as _json
+
+        laps: list[dict[str, Any]] = []
+        for row in self.db.list_laps(track=track, limit=60):
+            if not row.get("valid"):
+                continue
+            full = self.db.get_lap(row["id"]) or {}
+            try:
+                meta = _json.loads(full.get("meta_json") or "{}")
+            except (ValueError, TypeError):
+                meta = {}
+            laps.append({"lap_time_ms": row.get("lap_time_ms"), "metrics": meta.get("metrics") or {}})
+        profile = build_driver_profile(laps)
+        profile["track"] = track
+        return profile
+
     def session_state(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Cosa deve mostrare l'interfaccia adesso.
 
@@ -461,6 +480,9 @@ class LiveHub:
                 "electronics": self._last_electronics,
                 "physics_setup": self._last_physics_setup,
                 "invalid_reasons": reasons,
+                # Calcolate ora, una volta, mentre i campioni sono in mano:
+                # ricavarle dopo vorrebbe dire rileggere il giro dal database.
+                "metrics": lap_metrics(samples, _track_corners(frame.get("track"))) if valid else {},
             },
         )
         if valid:
@@ -605,6 +627,11 @@ def session() -> dict[str, Any]:
     return hub.session_state(hub.latest)
 
 
+@app.get("/api/profile")
+def driver_profile(track: str | None = None) -> dict[str, Any]:
+    return hub.driver_profile(track or hub._track)
+
+
 @app.get("/api/debug/telemetry")
 def debug_telemetry() -> dict[str, Any]:
     """Cosa dice il gioco e cosa ne capisce l'app.
@@ -697,9 +724,11 @@ def analyze_demo() -> dict[str, Any]:
         electronics=electronics,
         physics=physics,
     )
-    coach = generate_coach_report(analysis)
+    profile = hub.driver_profile()
+    coach = generate_coach_report(analysis, profile=profile)
     return {
         "analysis": analysis,
+        "profile": profile,
         "coach": coach,
         "path": bundle["path"],
         "corners": bundle["corners"],
@@ -773,8 +802,9 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         for r in hub.db.list_laps(track=track, limit=6)
         if r.get("id") != req.lap_id and r.get("lap_time_ms")
     ]
+    profile = hub.driver_profile(track)
     report = generate_coach_report(
-        analysis, force_heuristic=req.force_heuristic, history=history
+        analysis, force_heuristic=req.force_heuristic, history=history, profile=profile
     )
     path = [
         {"x": s["x"], "z": s["z"], "npos": s.get("npos")}
@@ -790,6 +820,7 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         "reference": reference,
         "current": current,
         "meta": analysis["meta"],
+        "profile": profile,
     }
 
 

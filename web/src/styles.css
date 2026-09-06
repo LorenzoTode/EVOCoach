@@ -857,3 +857,125 @@ body,
 .track-legend .ref {
   color: #4a9eff;
 }
+
+/* ==========================================================================
+   Schede del pannello coach
+   Tre viste al posto di una colonna lunga: cosi' ognuna sta a schermo.
+   ========================================================================== */
+
+.coach-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 14px 0 12px;
+  border-radius: 12px;
+  background: rgba(21, 32, 43, 0.06);
+}
+
+.coach-tabs button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.22s ease, color 0.22s ease;
+}
+
+.coach-tabs button:hover {
+  color: var(--panel-ink);
+}
+
+.coach-tabs button.active {
+  background: var(--panel);
+  color: var(--panel-ink);
+  box-shadow: 0 1px 3px rgba(21, 32, 43, 0.14);
+}
+
+.coach-tabs em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(21, 32, 43, 0.1);
+}
+
+.coach-tabs button.active em {
+  background: var(--accent);
+  color: #fff;
+}
+
+.profile-note {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border-left: 3px solid var(--accent);
+  background: rgba(15, 143, 138, 0.08);
+  line-height: 1.5;
+}
+
+.profile-stats,
+.profile-habits {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.profile-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.profile-habits {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.profile-stats > div,
+.profile-habits > div {
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(21, 32, 43, 0.05);
+  border: 1px solid var(--line);
+}
+
+.profile-stats span,
+.profile-habits span {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.profile-stats strong,
+.profile-habits strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-stats .ok,
+.profile-habits .ok {
+  color: var(--gain);
+}
+
+.profile-stats .bad,
+.profile-habits .bad {
+  color: var(--loss);
+}
+
+.profile-empty {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}

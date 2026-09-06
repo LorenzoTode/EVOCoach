@@ -68,11 +68,25 @@ export type LapRow = {
   created_at?: number;
 };
 
+export type DriverProfile = {
+  ready: boolean;
+  laps: number;
+  best_ms?: number;
+  /** Distacco medio dal proprio miglior giro: quanto sei costante. */
+  consistenza_s?: number;
+  /** Negativa = stai migliorando. */
+  tendenza_s?: number | null;
+  abitudini?: Record<string, number>;
+  tratti?: Tip[];
+  track?: string | null;
+};
+
 export type CoachReport = {
   summary: string;
   setup: Tip[];
   trajectory: Tip[];
   driving: Tip[];
+  driver_note?: string;
   source?: string;
   warning?: string;
 };
@@ -133,6 +147,7 @@ export type AnalyzeResponse = {
   current: Sample[];
   meta: Record<string, unknown>;
   electronics?: Record<string, number | null>;
+  profile?: DriverProfile;
 };
 
 export function formatMs(ms?: number | null): string {

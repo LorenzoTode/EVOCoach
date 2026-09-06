@@ -320,6 +320,8 @@ export default function App() {
             {data ? (
               <CoachPanels
                 summary={data.coach.summary}
+                driverNote={data.coach.driver_note}
+                profile={data.profile}
                 setup={data.coach.setup}
                 trajectory={data.coach.trajectory}
                 driving={data.coach.driving}

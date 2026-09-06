@@ -1,4 +1,5 @@
-import type { Tip } from "./types";
+import { useState } from "react";
+import type { DriverProfile, Tip } from "./types";
 
 function sourceLabel(source: string) {
   if (source === "anthropic") return "AI Anthropic";
@@ -49,15 +50,101 @@ function TipList({ tips, setupMode = false }: { tips: Tip[]; setupMode?: boolean
 
 type Props = {
   summary: string;
+  driverNote?: string;
   setup: Tip[];
   trajectory: Tip[];
   driving: Tip[];
+  profile?: DriverProfile;
   source?: string;
   warning?: string;
   metrics?: Record<string, number>;
 };
 
-export function CoachPanels({ summary, setup, trajectory, driving, source, warning, metrics }: Props) {
+type TabId = "setup" | "guida" | "profilo";
+
+function ProfilePanel({ profile, note }: { profile?: DriverProfile; note?: string }) {
+  if (!profile?.ready) {
+    return (
+      <p className="profile-empty">
+        Il profilo si costruisce sui giri validi: ne servono almeno due sulla stessa
+        pista. Finora ne ho {profile?.laps ?? 0}.
+      </p>
+    );
+  }
+  const trend = profile.tendenza_s;
+  return (
+    <>
+      {note ? <p className="profile-note">{note}</p> : null}
+
+      <div className="profile-stats">
+        <div>
+          <span>Giri letti</span>
+          <strong>{profile.laps}</strong>
+        </div>
+        <div>
+          <span>Costanza</span>
+          <strong className={(profile.consistenza_s ?? 0) > 1 ? "bad" : "ok"}>
+            {profile.consistenza_s != null ? `+${profile.consistenza_s.toFixed(2)}s` : "—"}
+          </strong>
+        </div>
+        <div>
+          <span>Tendenza</span>
+          <strong className={trend == null ? "" : trend < 0 ? "ok" : "bad"}>
+            {trend == null ? "—" : `${trend > 0 ? "+" : ""}${trend.toFixed(2)}s`}
+          </strong>
+        </div>
+      </div>
+
+      {profile.tratti?.length ? (
+        <TipList tips={profile.tratti} />
+      ) : (
+        <p className="profile-empty">
+          Nessun vizio ricorrente sopra soglia: gli errori che fai sono episodi, non
+          abitudini. Lavora sulle curve dove perdi di piu'.
+        </p>
+      )}
+
+      <div className="profile-habits">
+        {[
+          ["Gas+freno insieme", "overlap_pct", "%"],
+          ["Rilascio", "coast_pct", "%"],
+          ["Freno in curva", "trail_brake_pct", "%"],
+          ["Gas anticipato", "early_throttle_pct", "%"],
+          ["Picco freno", "brake_peak", ""],
+          ["Slip max", "max_slip", ""],
+        ].map(([label, key, unit]) => (
+          <div key={key}>
+            <span>{label}</span>
+            <strong>
+              {profile.abitudini?.[key] ?? "—"}
+              {unit}
+            </strong>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+export function CoachPanels({
+  summary,
+  driverNote,
+  setup,
+  trajectory,
+  driving,
+  profile,
+  source,
+  warning,
+  metrics,
+}: Props) {
+  const [tab, setTab] = useState<TabId>("setup");
+
+  const tabs: Array<{ id: TabId; label: string; count?: number }> = [
+    { id: "setup", label: "Setup", count: setup.length },
+    { id: "guida", label: "Guida & linee", count: trajectory.length + driving.length },
+    { id: "profilo", label: "Profilo", count: profile?.tratti?.length },
+  ];
+
   return (
     <aside className="coach">
       <header className="coach-summary">
@@ -89,29 +176,62 @@ export function CoachPanels({ summary, setup, trajectory, driving, source, warni
         ) : null}
       </header>
 
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Setup AC EVO</h3>
-          <span>menu → valore attuale → target</span>
-        </div>
-        <TipList tips={setup} setupMode />
-      </section>
+      <div className="coach-tabs" role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={tab === t.id ? "active" : ""}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+            {t.count ? <em>{t.count}</em> : null}
+          </button>
+        ))}
+      </div>
 
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Traiettoria</h3>
-          <span>linee & punti di corda</span>
-        </div>
-        <TipList tips={trajectory} />
-      </section>
+      <div className="coach-tabpanel" role="tabpanel">
+        {tab === "setup" ? (
+          <section className="panel">
+            <div className="panel-title">
+              <h3>Setup AC EVO</h3>
+              <span>menu → valore attuale → target</span>
+            </div>
+            <TipList tips={setup} setupMode />
+          </section>
+        ) : null}
 
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Guida</h3>
-          <span>input & timing</span>
-        </div>
-        <TipList tips={driving} />
-      </section>
+        {tab === "guida" ? (
+          <>
+            <section className="panel">
+              <div className="panel-title">
+                <h3>Traiettoria</h3>
+                <span>linee & punti di corda</span>
+              </div>
+              <TipList tips={trajectory} />
+            </section>
+            <section className="panel">
+              <div className="panel-title">
+                <h3>Guida</h3>
+                <span>input & timing</span>
+              </div>
+              <TipList tips={driving} />
+            </section>
+          </>
+        ) : null}
+
+        {tab === "profilo" ? (
+          <section className="panel">
+            <div className="panel-title">
+              <h3>Come guidi</h3>
+              <span>mediana degli ultimi giri validi</span>
+            </div>
+            <ProfilePanel profile={profile} note={driverNote} />
+          </section>
+        ) : null}
+      </div>
     </aside>
   );
 }

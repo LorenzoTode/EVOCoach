@@ -28,6 +28,10 @@ COME LEGGERE I DATI
 - electronics: i valori ATTUALI letti dal gioco, con il range legale per questa vettura.
 - candidate_setup_changes: modifiche gia' calcolate da euristiche locali. Sono CANDIDATE,
   non verita': selezionale, scartale o correggile in base ai dati.
+- profilo: come guida QUESTO pilota, non com'e' andato questo giro. "abitudini" sono
+  mediane sugli ultimi giri validi; "tratti" sono comportamenti che superano la soglia
+  abbastanza spesso da essere un modo di guidare. "consistenza_s" e' il distacco medio
+  dal proprio miglior giro; "tendenza_s" negativa significa che sta migliorando.
 
 REGOLE NON NEGOZIABILI
 1. Ogni valore che proponi deve stare dentro il range legale indicato in electronics.
@@ -41,6 +45,18 @@ REGOLE NON NEGOZIABILI
    per lo stesso sintomo: il pilota non saprebbe cosa ha funzionato.
 6. Se il pilota e' piu' veloce del riferimento (final_delta_ms negativo), dillo e concentrati
    su dove resta margine, non inventare problemi.
+
+COME USARE IL PROFILO
+7. Distingui l'episodio dall'abitudine. Un errore in una curva sola e' un episodio:
+   dillo e passa oltre. Un comportamento presente nei "tratti" e' un'abitudine, e va
+   affrontato come tale — cita da quanti giri lo fa.
+8. L'assetto va costruito attorno a come guida davvero, non attorno al pilota ideale.
+   Chi apre il gas presto per abitudine ha bisogno di trazione in uscita (differenziale
+   in power piu' chiuso, TC piu' alto); chi frena sempre a fondo ha bisogno di stabilita'
+   in staccata (bias piu' indietro, ABS piu' alto). Dillo esplicitamente nel consiglio:
+   "dato che tendi a...".
+9. Se "consistenza_s" supera 1 secondo, la priorita' non e' il setup ne' la traiettoria:
+   e' ripetere lo stesso giro. Dillo.
 
 PRIORITA'
 Ordina per tempo recuperabile. Una curva da 300 ms viene prima di una da 40 ms.
@@ -104,6 +120,13 @@ REPORT_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        "driver_note": {
+            "type": "string",
+            "description": (
+                "1-2 frasi su come guida questo pilota secondo il profilo, e su cosa "
+                "cambia di conseguenza. Se il profilo non e' pronto, dillo in una frase."
+            ),
+        },
         "driving": {
             "type": "array",
             "maxItems": 4,
@@ -115,7 +138,7 @@ REPORT_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["summary", "setup", "trajectory", "driving"],
+    "required": ["summary", "driver_note", "setup", "trajectory", "driving"],
     "additionalProperties": False,
 }
 
@@ -293,7 +316,9 @@ def _corner_phases(
 
 
 def _compact_analysis(
-    analysis: dict[str, Any], history: list[dict[str, Any]] | None = None
+    analysis: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     segments = analysis.get("delta", {}).get("segments", [])
     electronics = (analysis.get("meta", {}) or {}).get("electronics") or {}
@@ -311,6 +336,8 @@ def _compact_analysis(
     }
     if history:
         payload["previous_laps"] = history[:5]
+    if profile and profile.get("ready"):
+        payload["profilo"] = profile
     return payload
 
 
@@ -364,7 +391,9 @@ def _strip_fences(text: str) -> str:
 
 
 def _openai_compat_report(
-    analysis: dict[str, Any], history: list[dict[str, Any]] | None
+    analysis: dict[str, Any],
+    history: list[dict[str, Any]] | None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = os.getenv("COACH_BASE_URL", "").strip().rstrip("/")
     api_key = os.getenv("COACH_API_KEY", "").strip()
@@ -373,7 +402,7 @@ def _openai_compat_report(
     if not model:
         raise ValueError("COACH_MODEL non impostato")
 
-    compact = _compact_analysis(analysis, history)
+    compact = _compact_analysis(analysis, history, profile)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -476,11 +505,13 @@ def generate_coach_report(
     *,
     force_heuristic: bool = False,
     history: list[dict[str, Any]] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Report di coaching. Usa Claude se c'e' una API key, altrimenti l'euristica locale.
 
     history: giri precedenti sulla stessa pista, cosi' il coach vede la progressione
     invece di ripartire da zero a ogni giro.
+    profile: come guida abitualmente il pilota, per distinguere l'episodio dal vizio.
     """
     if force_heuristic:
         return _heuristic_report(analysis)
@@ -489,7 +520,7 @@ def generate_coach_report(
     # COACH_BASE_URL e' configurato ha la precedenza su Anthropic.
     if os.getenv("COACH_BASE_URL", "").strip():
         try:
-            parsed = _openai_compat_report(analysis, history)
+            parsed = _openai_compat_report(analysis, history, profile)
             parsed["source"] = "openai_compat"
             parsed["model"] = os.getenv("COACH_MODEL", "")
             local = _heuristic_report(analysis)
@@ -518,7 +549,7 @@ def generate_coach_report(
 
     try:
         client = _get_client(api_key)
-        compact = _compact_analysis(analysis, history)
+        compact = _compact_analysis(analysis, history, profile)
 
         model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
         request: dict[str, Any] = {
