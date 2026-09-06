@@ -347,11 +347,14 @@ class LiveHub:
         ready         c'e' almeno un giro valido da analizzare
         demo          modalita' dimostrativa, dati sintetici
         """
+        # Basta che ci sia qualcosa da guardare: la mappa che si disegna con
+        # la macchina sopra vale gia' da sola, l'analisi arriva dopo.
+        coverage = float((frame.get("map") or {}).get("coverage") or 0.0)
         if frame.get("mode") == "demo":
             state = "demo"
         elif not frame.get("connected"):
             state = "waiting_game"
-        elif self._valid_laps > 0:
+        elif self._valid_laps > 0 or coverage >= 0.25:
             state = "ready"
         else:
             state = "waiting_lap"

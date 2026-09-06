@@ -321,7 +321,9 @@ export default function App() {
               <aside className="coach skeleton">
                 {loading
                   ? "Il race engineer sta guardando il tuo giro…"
-                  : "Serve un secondo giro valido per il confronto."}
+                  : validLaps === 0
+                    ? "Sto imparando il tracciato. Completa un giro valido."
+                    : "Serve un secondo giro valido per avere un termine di paragone."}
               </aside>
             )}
           </main>
