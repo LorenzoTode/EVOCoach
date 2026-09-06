@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+*.db
+data/
+.idea/
+.vscode/
+web/node_modules/
+web/dist/
