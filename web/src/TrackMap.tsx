@@ -172,24 +172,42 @@ export function TrackMap({
       .filter((s) => s.x != null && s.z != null)
       .map((s) => project({ x: s.x!, z: s.z! }, b, size.w, size.h));
     if (refPts.length > 2) {
+      // Alone scuro sotto: la linea blu resta leggibile anche sull'asfalto.
       ctx.beginPath();
       refPts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-      ctx.strokeStyle = "rgba(120, 180, 255, 0.35)";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([4, 6]);
+      ctx.strokeStyle = "rgba(4, 10, 20, 0.55)";
+      ctx.lineWidth = 6;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
       ctx.stroke();
-      ctx.setLineDash([]);
+
+      ctx.beginPath();
+      refPts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.strokeStyle = "#4a9eff";
+      ctx.lineWidth = 3;
+      ctx.stroke();
     }
 
-    const curPts = (currentSamples || [])
-      .filter((s) => s.x != null && s.z != null)
-      .map((s) => project({ x: s.x!, z: s.z! }, b, size.w, size.h));
-    if (curPts.length > 2) {
-      ctx.beginPath();
-      curPts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-      ctx.strokeStyle = "rgba(255, 210, 90, 0.25)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+    // Il giro corrente non e' una linea sola: ogni tratto prende il colore del
+    // delta in quel punto, cosi' si vede *dove* si guadagna e dove si perde.
+    const curSamples = (currentSamples || []).filter((s) => s.x != null && s.z != null);
+    if (curSamples.length > 2) {
+      const deltaAt = (npos: number) => {
+        if (!segments.length) return 0;
+        const i = Math.min(segments.length - 1, Math.max(0, Math.round(npos * segments.length)));
+        return segments[i]?.delta_ms ?? 0;
+      };
+      ctx.lineWidth = 3.5;
+      ctx.lineCap = "round";
+      for (let i = 0; i < curSamples.length - 1; i++) {
+        const a = project({ x: curSamples[i].x!, z: curSamples[i].z! }, b, size.w, size.h);
+        const c = project({ x: curSamples[i + 1].x!, z: curSamples[i + 1].z! }, b, size.w, size.h);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(c.x, c.y);
+        ctx.strokeStyle = deltaColor(deltaAt(curSamples[i].npos));
+        ctx.stroke();
+      }
     }
 
     ctx.font = "600 12px 'IBM Plex Sans', sans-serif";
@@ -234,10 +252,11 @@ export function TrackMap({
       <canvas ref={canvasRef} className="track-canvas" style={{ width: "100%", height: "100%" }} />
       <div className="track-legend">
         {statusNote ? <span>{statusNote}</span> : null}
+        {referenceSamples?.length ? <span className="ref">Blu = giro di riferimento</span> : null}
         {deltaReady ? (
           <>
-            <span className="gain">Verde = avanti (delta AC EVO)</span>
-            <span className="loss">Rosso = dietro</span>
+            <span className="gain">Verde = guadagni</span>
+            <span className="loss">Rosso = perdi</span>
           </>
         ) : (
           <span>Mappa in apprendimento — delta dopo il 1° giro</span>

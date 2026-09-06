@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -29,6 +30,8 @@ from telemetry.track_map import TrackMapBuilder
 # temporanea: il .env accanto all'eseguibile non verrebbe mai trovato.
 _ENV_FILE = app_dir() / ".env"
 load_dotenv(_ENV_FILE if _ENV_FILE.exists() else None)
+
+log = logging.getLogger(__name__)
 
 ROOT = bundle_dir()
 WEB_DIST = ROOT / "web" / "dist"
@@ -248,6 +251,7 @@ class LiveHub:
         self._last_reported_ms: int | None = None
         self._last_diag: dict[str, Any] = {}
         self._last_saved: dict[str, Any] | None = None
+        self._tracks_dir = app_dir() / "data" / "tracks"
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -401,6 +405,9 @@ class LiveHub:
     def _reset_session(self, track: str | None) -> None:
         """Pista cambiata: i conteggi della sessione precedente non valgono piu'."""
         self._track = track
+        if track:
+            self.track_map.reset(track)
+            self.track_map.load(self._tracks_dir, track)
         self._valid_laps = 0
         self._invalid_laps = 0
         self._lap_valid = True
@@ -460,6 +467,11 @@ class LiveHub:
             self._valid_laps += 1
         else:
             self._invalid_laps += 1
+        # A giro chiuso il tracciato e' al suo meglio: e' il momento di tenerlo.
+        try:
+            self.track_map.save(self._tracks_dir)
+        except OSError as exc:
+            log.warning("Tracciato non salvato: %s", exc)
         self._last_saved = {
             "lap_id": lap_id,
             "lap_time_ms": lap_time,
@@ -475,6 +487,8 @@ class LiveHub:
             self._reset_session(track)
         elif track and not self._track:
             self._track = track
+            if self.track_map.load(self._tracks_dir, track):
+                log.info("Tracciato di %s ripreso dalle sessioni precedenti", track)
 
         sample = {
             "t_ms": frame.get("t_ms") or 0,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 
@@ -159,6 +162,55 @@ class TrackMapBuilder:
                 }
             )
         return segs
+
+    # ---- memoria del tracciato fra una sessione e l'altra -----------------
+    #
+    # Il gioco non pubblica la geometria dei circuiti: questa mappa e' l'unica
+    # fonte, e la si ricava guidando. Salvarla significa che la seconda volta
+    # che si torna su una pista il tracciato c'e' gia' completo, invece di
+    # doverlo ridisegnare da zero ogni sessione.
+
+    @staticmethod
+    def _slug(track: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", track.lower()).strip("_") or "sconosciuto"
+
+    def save(self, directory: Path) -> Path | None:
+        if not self.track or self.coverage < 0.5:
+            return None
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{self._slug(self.track)}.json"
+        payload = {
+            "track": self.track,
+            "bins": self.bins,
+            "coverage": round(self.coverage, 4),
+            "xz": [[round(p[0], 1), round(p[1], 1)] if p else None for p in self._xz],
+        }
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        return target
+
+    def load(self, directory: Path, track: str) -> bool:
+        """Riprende un tracciato gia' imparato. True se ha trovato qualcosa."""
+        source = directory / f"{self._slug(track)}.json"
+        if not source.is_file():
+            return False
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if data.get("bins") != self.bins or not isinstance(data.get("xz"), list):
+            return False
+
+        self.track = data.get("track") or track
+        self._xz = [
+            (float(p[0]), float(p[1])) if isinstance(p, list) and len(p) == 2 else None
+            for p in data["xz"]
+        ][: self.bins]
+        self._xz += [None] * (self.bins - len(self._xz))
+        # Un punto ripreso vale come una sola osservazione: le nuove passate
+        # lo correggono senza essere schiacciate da una media di mille campioni.
+        self._counts = [1 if p else 0 for p in self._xz]
+        self.path_version += 1
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         return {

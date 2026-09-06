@@ -20,6 +20,13 @@ function wsUrl() {
 
 const EXIT_MS = 420;
 
+/** Sul computer che fa girare il gioco non serve una pagina d'ingresso:
+ *  sei gia' li'. Da un altro schermo il benvenuto ha senso. */
+function isLocalScreen() {
+  const h = window.location.hostname;
+  return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+}
+
 /**
  * Monta i figli con una dissolvenza in entrata e li smonta solo dopo quella
  * in uscita, cosi' le schermate si incrociano invece di sparire di colpo.
@@ -49,7 +56,7 @@ function Fade({
 }
 
 export default function App() {
-  const [entered, setEntered] = useState(false);
+  const [entered, setEntered] = useState(isLocalScreen);
   const [data, setData] = useState<AnalyzeResponse | null>(null);
   const [live, setLive] = useState<LiveFrame | null>(null);
   const [loading, setLoading] = useState(false);
