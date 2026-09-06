@@ -426,7 +426,15 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         current,
         reference,
         _track_corners(track),
-        meta={"track": track, "car": lap.get("car"), "lap_id": req.lap_id, "reference_lap_id": ref_id},
+        meta={
+            "track": track,
+            "car": lap.get("car"),
+            "lap_id": req.lap_id,
+            "reference_lap_id": ref_id,
+            "current_lap_time_ms": lap.get("lap_time_ms"),
+            "reference_lap_time_ms": (hub.db.get_lap(ref_id) or {}).get("lap_time_ms"),
+            "electronics": electronics,
+        },
         electronics=electronics,
         physics=physics,
     )
@@ -442,7 +450,21 @@ def coach(req: CoachRequest) -> dict[str, Any]:
     report = generate_coach_report(
         analysis, force_heuristic=req.force_heuristic, history=history
     )
-    return {"analysis": analysis, "coach": report, "electronics": electronics}
+    path = [
+        {"x": s["x"], "z": s["z"], "npos": s.get("npos")}
+        for s in current
+        if s.get("x") is not None and s.get("z") is not None
+    ]
+    return {
+        "analysis": analysis,
+        "coach": report,
+        "electronics": electronics,
+        "path": path,
+        "corners": _track_corners(track),
+        "reference": reference,
+        "current": current,
+        "meta": analysis["meta"],
+    }
 
 
 @app.get("/api/setup/live")

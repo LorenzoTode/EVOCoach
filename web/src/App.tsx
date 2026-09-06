@@ -7,6 +7,7 @@ import {
   formatMs,
   type AnalyzeResponse,
   type DeltaSegment,
+  type LapRow,
   type LiveFrame,
 } from "./types";
 
@@ -21,25 +22,50 @@ export default function App() {
   const [live, setLive] = useState<LiveFrame | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [laps, setLaps] = useState<LapRow[]>([]);
+  // null = giro demo sintetico; un id = un giro vero salvato dal database
+  const [lapId, setLapId] = useState<number | null>(null);
+
+  const loadLaps = useCallback(async () => {
+    try {
+      const res = await fetch("/api/laps");
+      if (res.ok) setLaps((await res.json()) as LapRow[]);
+    } catch {
+      /* la lista giri e' un extra: se manca si resta sulla demo */
+    }
+  }, []);
 
   const loadAnalysis = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/analyze/demo", { method: "POST" });
+      const res =
+        lapId == null
+          ? await fetch("/api/analyze/demo", { method: "POST" })
+          : await fetch("/api/coach", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ use_demo: false, lap_id: lapId }),
+            });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as AnalyzeResponse;
+      const json = (await res.json()) as AnalyzeResponse & { error?: string };
+      if (json.error) throw new Error(json.error);
       setData(json);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Errore di rete");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lapId]);
 
   useEffect(() => {
     void loadAnalysis();
   }, [loadAnalysis]);
+
+  // Aggiorna la lista a ogni cambio giro: in pista i giri si salvano da soli
+  useEffect(() => {
+    void loadLaps();
+  }, [loadLaps, live?.lap]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -146,9 +172,23 @@ export default function App() {
           </div>
         </div>
 
-        <button type="button" className="btn" onClick={() => void loadAnalysis()} disabled={loading}>
-          {loading ? "Analisi…" : "Rianalizza"}
-        </button>
+        <div className="lap-picker">
+          <select
+            value={lapId ?? "demo"}
+            onChange={(e) => setLapId(e.target.value === "demo" ? null : Number(e.target.value))}
+            aria-label="Giro da analizzare"
+          >
+            <option value="demo">Giro demo (Monza)</option>
+            {laps.map((l) => (
+              <option key={l.id} value={l.id}>
+                Giro {l.lap_number ?? l.id} · {formatMs(l.lap_time_ms)} · {l.track ?? "?"}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="btn" onClick={() => void loadAnalysis()} disabled={loading}>
+            {loading ? "Analisi…" : "Rianalizza"}
+          </button>
+        </div>
       </header>
 
       {error ? <div className="banner error">Backend non raggiungibile ({error}). Avvia `python main.py`.</div> : null}

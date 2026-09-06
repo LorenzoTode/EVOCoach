@@ -37,6 +37,16 @@ export type Tip = {
   action?: string;
 };
 
+export type LapRow = {
+  id: number;
+  lap_number?: number | null;
+  lap_time_ms?: number | null;
+  valid?: number | boolean;
+  track?: string | null;
+  car?: string | null;
+  created_at?: number;
+};
+
 export type CoachReport = {
   summary: string;
   setup: Tip[];
