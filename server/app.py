@@ -21,22 +21,16 @@ from analysis.delta import build_analysis_payload
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
+from storage.paths import app_dir, bundle_dir
 from telemetry.demo import DemoPlayer, MONZA_CORNERS
 from telemetry.track_map import TrackMapBuilder
 
-load_dotenv()
+# find_dotenv() risalirebbe da __file__, che impacchettato e' la cartella
+# temporanea: il .env accanto all'eseguibile non verrebbe mai trovato.
+_ENV_FILE = app_dir() / ".env"
+load_dotenv(_ENV_FILE if _ENV_FILE.exists() else None)
 
-def _root() -> Path:
-    """Radice dei file dell'app.
-
-    Impacchettata con PyInstaller, la cartella web/dist finisce nella
-    directory temporanea di estrazione, non accanto al sorgente.
-    """
-    bundle = getattr(sys, "_MEIPASS", None)
-    return Path(bundle) if bundle else Path(__file__).resolve().parent.parent
-
-
-ROOT = _root()
+ROOT = bundle_dir()
 WEB_DIST = ROOT / "web" / "dist"
 HZ = float(os.getenv("TELEMETRY_HZ", "15"))
 

@@ -8,7 +8,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "telemetry.db"
+from storage.paths import app_dir
+
+# Accanto all'eseguibile, non al sorgente: dentro un pacchetto PyInstaller il
+# sorgente sta in una cartella temporanea che sparisce alla chiusura, e con lei
+# sparirebbero tutti i giri registrati.
+DEFAULT_DB = app_dir() / "data" / "telemetry.db"
 
 
 class Database:
