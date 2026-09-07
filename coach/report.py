@@ -76,9 +76,13 @@ PRIORITA'
 Ordina per tempo recuperabile. Una curva da 300 ms viene prima di una da 40 ms.
 Se una singola loss_zone vale piu' del 40% del delta totale, il summary deve nominarla.
 
-STILE
-Italiano tecnico, seconda persona singolare, niente giri di parole, niente incoraggiamenti.
-Massimo 5 setup, 4 trajectory, 4 driving. Meglio 2 consigli precisi che 5 generici.
+STILE E LUNGHEZZA — vincoli, non preferenze
+Massimo 5 voci in setup, 4 in trajectory, 4 in driving. Meglio 2 precise che 5 generiche:
+se hai due cose da dire, scrivi due voci e fermati.
+Ogni "detail" al massimo due frasi. Ogni "title" al massimo sei parole.
+Il summary al massimo tre frasi.
+Italiano tecnico, seconda persona singolare, niente giri di parole, niente incoraggiamenti,
+nessuna ripetizione fra una voce e l'altra.
 """
 
 _TIP_PROPS = {
@@ -421,7 +425,10 @@ def _openai_compat_report(
     base_url = os.getenv("COACH_BASE_URL", "").strip().rstrip("/")
     api_key = os.getenv("COACH_API_KEY", "").strip()
     model = os.getenv("COACH_MODEL", "").strip()
-    timeout = float(os.getenv("COACH_TIMEOUT", "120"))
+    # 90s: a 100 tok/s una risposta buona ne impiega 15, a 25 tok/s (CPU) circa
+    # 40. Oltre non sta generando, sta ripetendosi.
+    timeout = float(os.getenv("COACH_TIMEOUT", "90"))
+    max_tokens = int(os.getenv("COACH_MAX_TOKENS", "1400"))
     if not model:
         raise ValueError("COACH_MODEL non impostato")
 
@@ -436,11 +443,32 @@ def _openai_compat_report(
             ),
         },
     ]
-    base = {"model": model, "messages": messages, "temperature": 0.2}
+    base = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        # Un tetto esplicito: senza, un modello piccolo puo' produrre venti
+        # voci di setup invece di cinque e triplicare il tempo di risposta.
+        "max_tokens": max_tokens,
+    }
 
     # Degradazione progressiva: non tutti i provider supportano lo stesso
     # livello di vincolo sull'output. Si parte dal piu' stretto.
     attempts: list[dict[str, Any]] = [
+        {
+            **base,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "coach_report",
+                    "strict": True,
+                    # Con i limiti: se il provider li rifiuta, la degradazione
+                    # sotto riprova senza. Un modello piccolo senza tetto sulle
+                    # liste ne produce quante gliene vengono.
+                    "schema": REPORT_SCHEMA,
+                },
+            },
+        },
         {
             **base,
             "response_format": {

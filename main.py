@@ -153,6 +153,16 @@ def list_models() -> int:
 # tagli di nuovo il traguardo, la lentezza non si vede.
 BUDGET_GIRO_S = 60.0
 
+# Un modello da pochi miliardi di parametri su CPU sta sotto i 30 token al
+# secondo. Molto piu' veloce vuol dire che sta girando sulla scheda video —
+# cioe' contendendo la GPU al gioco, che e' esattamente cio' che si voleva
+# evitare mettendolo in locale.
+SOGLIA_SOSPETTO_GPU_TPS = 50.0
+
+# Oltre questa lunghezza il modello si sta dilungando: il tempo di risposta
+# cresce in proporzione, e un report lungo non e' un report migliore.
+OUTPUT_VERBOSO = 900
+
 
 def bench_coach(runs: int) -> int:
     """Quanto ci mette il coach su QUESTA macchina, con QUESTO backend.
@@ -192,7 +202,7 @@ def bench_coach(runs: int) -> int:
     )
     profile = attach_cost(hub.driver_profile(), analysis.get("corners", []))
 
-    tempi, esiti = [], []
+    tempi, esiti, velocita, uscite = [], [], [], []
     for i in range(1, runs + 1):
         inizio = time.perf_counter()
         report = generate_coach_report(analysis, profile=profile)
@@ -203,6 +213,9 @@ def bench_coach(runs: int) -> int:
         ok = report.get("source") != "heuristic"
         esiti.append(ok)
         tempi.append(durata)
+        if ok and out and durata > 0:
+            velocita.append(out / durata)
+            uscite.append(out)
         stato = "ok" if ok else f"FALLITO ({report.get('warning', '')[:50]})"
         print(f"  {i}/{runs}  {durata:6.1f}s   {tps}   in={usage.get('in', '?')} out={out or '?'}   {stato}")
 
@@ -216,10 +229,30 @@ def bench_coach(runs: int) -> int:
     margine = BUDGET_GIRO_S / mediana if mediana else 0
     if mediana <= BUDGET_GIRO_S:
         print(f"  Sta nel budget di un giro ({BUDGET_GIRO_S:.0f}s): {margine:.1f}x di margine.")
-        print("  Il report e' pronto prima che tu tagli di nuovo il traguardo.\n")
     else:
         print(f"  Fuori dal budget di un giro ({BUDGET_GIRO_S:.0f}s).")
-        print("  Serve un modello piu' piccolo, meno token in uscita, o piu' CPU.\n")
+        print("  Serve un modello piu' piccolo, meno token in uscita, o piu' CPU.")
+
+    falliti = len(esiti) - sum(esiti)
+    if falliti:
+        print(f"\n  ATTENZIONE: {falliti} tentativo/i su {runs} non ha risposto.")
+        print("  Su un modello locale di solito significa che si e' dilungato fino al timeout.")
+        print("  COACH_MAX_TOKENS nel .env mette un tetto; abbassarlo accorcia anche i tempi.")
+
+    if velocita:
+        tps = statistics.median(velocita)
+        if tps > SOGLIA_SOSPETTO_GPU_TPS and base_url:
+            print(f"\n  ATTENZIONE: {tps:.0f} token/s sono troppi per una CPU.")
+            print("  Il modello sta quasi certamente girando sulla GPU, cioe' contende")
+            print("  la scheda video al gioco. Verifica con:  ollama ps")
+            print("  Nella colonna PROCESSOR deve leggersi 100% CPU.")
+
+    if uscite:
+        med_out = statistics.median(uscite)
+        if med_out > OUTPUT_VERBOSO:
+            print(f"\n  Il modello produce {med_out:.0f} token per report: e' prolisso.")
+            print("  Un report utile ne richiede 400-600. Meno token = meno attesa.")
+    print()
     return 0
 
 
