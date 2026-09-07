@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -486,12 +487,28 @@ def _openai_compat_report(
 
     import time
 
+    # Il timeout vale per l'intera analisi, non per ogni tentativo: con quattro
+    # livelli di degradazione e tre riprove ciascuno, un timeout per richiesta
+    # diventa dieci minuti di attesa. Chi aspetta un report a fine giro ha un
+    # solo budget, e va speso tutto insieme.
+    scadenza = time.monotonic() + timeout
+
+    def rimanente() -> float:
+        return scadenza - time.monotonic()
+
     last_error: Exception | None = None
     for i, payload in enumerate(attempts):
         data = None
         for attempt in range(3):
+            if rimanente() <= 2.0:
+                log.info("Coach: budget di tempo esaurito dopo %d tentativi", i + attempt)
+                raise last_error or TimeoutError(
+                    f"nessuna risposta utilizzabile entro {timeout:.0f}s"
+                )
             try:
-                data = _post_json(f"{base_url}/chat/completions", payload, api_key, timeout)
+                data = _post_json(
+                    f"{base_url}/chat/completions", payload, api_key, rimanente()
+                )
                 break
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", "replace")[:300]
