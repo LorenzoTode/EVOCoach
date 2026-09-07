@@ -32,6 +32,11 @@ COME LEGGERE I DATI
   mediane sugli ultimi giri validi; "tratti" sono comportamenti che superano la soglia
   abbastanza spesso da essere un modo di guidare. "consistenza_s" e' il distacco medio
   dal proprio miglior giro; "tendenza_s" negativa significa che sta migliorando.
+  Dentro ogni tratto: "corners" sono le curve dove si manifesta di piu';
+  "tempo_perso_in_quelle_curve_ms" e' il tempo perso in quelle curve — una correlazione,
+  non una prova che il vizio sia la causa: dillo con prudenza ("nelle curve dove lo fai
+  perdi X"), mai "questo vizio ti costa X"; "drill" e' l'esercizio gia' scritto per
+  correggerlo e "check" come capire se ha funzionato; "trend" negativo = sta calando.
 
 REGOLE NON NEGOZIABILI
 1. Ogni valore che proponi deve stare dentro il range legale indicato in electronics.
@@ -57,6 +62,10 @@ COME USARE IL PROFILO
    "dato che tendi a...".
 9. Se "consistenza_s" supera 1 secondo, la priorita' non e' il setup ne' la traiettoria:
    e' ripetere lo stesso giro. Dillo.
+10. Un consiglio di guida senza un'azione verificabile e' inutile. Quando un tratto ha un
+   "drill", riportalo come azione — puoi riscriverlo piu' corto, non cambiarne la sostanza
+   ne' inventarne uno tuo — e nomina le curve in cui provarlo. Il pilota deve poter uscire
+   dai box sapendo cosa fare nei prossimi due giri e come accorgersi che sta funzionando.
 
 PRIORITA'
 Ordina per tempo recuperabile. Una curva da 300 ms viene prima di una da 40 ms.
@@ -444,6 +453,15 @@ def _openai_compat_report(
                 break
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", "replace")[:300]
+                # Un 429 puo' voler dire due cose opposte: troppe richieste al
+                # secondo (passa da solo) oppure quota esaurita (non passa fino
+                # al rinnovo). Ritentare la seconda e' tempo buttato.
+                quota_finita = exc.code == 429 and "quota" in body.lower()
+                if quota_finita:
+                    raise RuntimeError(
+                        "Quota del provider esaurita. Aspetta il rinnovo, prova un altro "
+                        "modello con --list-models, oppure passa a un'altra chiave."
+                    ) from exc
                 last_error = RuntimeError(f"HTTP {exc.code}: {body}")
                 if exc.code in _RETRY_STATUSES and attempt < 2:
                     delay = 2**attempt

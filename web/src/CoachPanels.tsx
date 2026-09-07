@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DriverProfile, Tip } from "./types";
+import type { DriverProfile, DriverTrait, Tip } from "./types";
 
 function sourceLabel(source: string) {
   if (source === "anthropic") return "AI Anthropic";
@@ -62,6 +62,46 @@ type Props = {
 
 type TabId = "setup" | "guida" | "profilo";
 
+function TraitCard({ trait }: { trait: DriverTrait }) {
+  const trend = trait.trend;
+  return (
+    <li className={severityClass(trait.severity)}>
+      <div className="trait-head">
+        <strong>{trait.title}</strong>
+        {trend != null && trend !== 0 ? (
+          <span className={`trait-trend ${trend < 0 ? "ok" : "bad"}`}>
+            {trend < 0 ? "▼" : "▲"} {Math.abs(trend)}
+          </span>
+        ) : null}
+      </div>
+
+      <p>{trait.detail}</p>
+
+      {trait.corners?.length ? (
+        <p className="trait-where">
+          <span>Soprattutto in</span>
+          {trait.corners.map((c) => (
+            <em key={c.name}>{c.name}</em>
+          ))}
+          {trait.tempo_perso_in_quelle_curve_ms ? (
+            <b>
+              lì perdi {(trait.tempo_perso_in_quelle_curve_ms / 1000).toFixed(2)}s
+            </b>
+          ) : null}
+        </p>
+      ) : null}
+
+      {trait.drill ? (
+        <div className="trait-drill">
+          <span className="drill-label">Da provare nei prossimi due giri</span>
+          <p>{trait.drill}</p>
+          {trait.check ? <p className="drill-check">Ha funzionato se: {trait.check}</p> : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 function ProfilePanel({ profile, note }: { profile?: DriverProfile; note?: string }) {
   if (!profile?.ready) {
     return (
@@ -72,6 +112,7 @@ function ProfilePanel({ profile, note }: { profile?: DriverProfile; note?: strin
     );
   }
   const trend = profile.tendenza_s;
+  const consistency = profile.consistenza_s ?? 0;
   return (
     <>
       {note ? <p className="profile-note">{note}</p> : null}
@@ -83,9 +124,7 @@ function ProfilePanel({ profile, note }: { profile?: DriverProfile; note?: strin
         </div>
         <div>
           <span>Costanza</span>
-          <strong className={(profile.consistenza_s ?? 0) > 1 ? "bad" : "ok"}>
-            {profile.consistenza_s != null ? `+${profile.consistenza_s.toFixed(2)}s` : "—"}
-          </strong>
+          <strong className={consistency > 1 ? "bad" : "ok"}>+{consistency.toFixed(2)}s</strong>
         </div>
         <div>
           <span>Tendenza</span>
@@ -95,24 +134,36 @@ function ProfilePanel({ profile, note }: { profile?: DriverProfile; note?: strin
         </div>
       </div>
 
+      {consistency > 1 ? (
+        <p className="profile-warn">
+          Prima di toccare qualunque cosa: sei {consistency.toFixed(2)}s in media dal tuo
+          giro migliore. Con questa variabilità non si capisce se una modifica funziona.
+          Cerca di ripetere lo stesso giro, poi si lavora sul resto.
+        </p>
+      ) : null}
+
       {profile.tratti?.length ? (
-        <TipList tips={profile.tratti} />
+        <ul className="tips trait-list">
+          {profile.tratti.map((t) => (
+            <TraitCard key={t.metric} trait={t} />
+          ))}
+        </ul>
       ) : (
         <p className="profile-empty">
           Nessun vizio ricorrente sopra soglia: gli errori che fai sono episodi, non
-          abitudini. Lavora sulle curve dove perdi di piu'.
+          abitudini. Lavora sulle curve dove perdi di più.
         </p>
       )}
 
       <div className="profile-habits">
-        {[
+        {([
           ["Gas+freno insieme", "overlap_pct", "%"],
           ["Rilascio", "coast_pct", "%"],
           ["Freno in curva", "trail_brake_pct", "%"],
           ["Gas anticipato", "early_throttle_pct", "%"],
           ["Picco freno", "brake_peak", ""],
           ["Slip max", "max_slip", ""],
-        ].map(([label, key, unit]) => (
+        ] as const).map(([label, key, unit]) => (
           <div key={key}>
             <span>{label}</span>
             <strong>

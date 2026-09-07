@@ -68,6 +68,21 @@ export type LapRow = {
   created_at?: number;
 };
 
+export type DriverTrait = {
+  severity: string;
+  title: string;
+  detail: string;
+  metric: string;
+  value: number;
+  /** Negativo = l'abitudine sta calando. */
+  trend?: number | null;
+  corners?: Array<{ name: string; value: number; laps: number }>;
+  /** Tempo perso nelle curve dove il tratto si manifesta. Correlazione. */
+  tempo_perso_in_quelle_curve_ms?: number;
+  drill?: string;
+  check?: string;
+};
+
 export type DriverProfile = {
   ready: boolean;
   laps: number;
@@ -77,7 +92,7 @@ export type DriverProfile = {
   /** Negativa = stai migliorando. */
   tendenza_s?: number | null;
   abitudini?: Record<string, number>;
-  tratti?: Tip[];
+  tratti?: DriverTrait[];
   track?: string | null;
 };
 

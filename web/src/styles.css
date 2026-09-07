@@ -979,3 +979,95 @@ body,
   color: var(--muted);
   line-height: 1.5;
 }
+
+/* ==========================================================================
+   Schede dei vizi ricorrenti: dove succede, quanto vale, cosa fare
+   ========================================================================== */
+
+.trait-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.trait-trend {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.trait-trend.ok {
+  color: var(--gain);
+}
+
+.trait-trend.bad {
+  color: var(--loss);
+}
+
+.trait-where {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trait-where em {
+  font-style: normal;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(21, 32, 43, 0.08);
+  color: var(--panel-ink);
+  font-weight: 600;
+}
+
+.trait-where b {
+  color: var(--loss);
+  font-variant-numeric: tabular-nums;
+}
+
+.trait-drill {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 143, 138, 0.08);
+  border: 1px solid rgba(15, 143, 138, 0.22);
+}
+
+.drill-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.trait-drill p {
+  margin: 5px 0 0;
+  line-height: 1.5;
+}
+
+.drill-check {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profile-warn {
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border-left: 3px solid var(--accent-2);
+  background: rgba(217, 119, 6, 0.09);
+  line-height: 1.5;
+}
+
+.trait-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

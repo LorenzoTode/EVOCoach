@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from analysis.delta import build_analysis_payload
-from analysis.profile import build_driver_profile, lap_metrics
+from analysis.profile import attach_cost, build_driver_profile, lap_metrics
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
@@ -724,7 +724,7 @@ def analyze_demo() -> dict[str, Any]:
         electronics=electronics,
         physics=physics,
     )
-    profile = hub.driver_profile()
+    profile = attach_cost(hub.driver_profile(), analysis.get("corners", []))
     coach = generate_coach_report(analysis, profile=profile)
     return {
         "analysis": analysis,
@@ -802,7 +802,7 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         for r in hub.db.list_laps(track=track, limit=6)
         if r.get("id") != req.lap_id and r.get("lap_time_ms")
     ]
-    profile = hub.driver_profile(track)
+    profile = attach_cost(hub.driver_profile(track), analysis.get("corners", []))
     report = generate_coach_report(
         analysis, force_heuristic=req.force_heuristic, history=history, profile=profile
     )
