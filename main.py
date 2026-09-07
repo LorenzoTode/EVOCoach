@@ -202,8 +202,16 @@ def bench_coach(runs: int) -> int:
     )
     profile = attach_cost(hub.driver_profile(), analysis.get("corners", []))
 
+    timeout = float(os.getenv("COACH_TIMEOUT", "90"))
+    print(f"  Timeout per tentativo: {timeout:.0f}s · tetto token: "
+          f"{os.getenv('COACH_MAX_TOKENS', '1400')}")
+    print(f"  Attesa massima totale: ~{timeout * runs / 60:.0f} minuti se non risponde.\n")
+
     tempi, esiti, velocita, uscite = [], [], [], []
     for i in range(1, runs + 1):
+        # Stampato PRIMA: su CPU un tentativo puo' durare un minuto, e uno
+        # schermo fermo senza spiegazioni sembra un blocco.
+        print(f"  {i}/{runs}  in corso… ", end="", flush=True)
         inizio = time.perf_counter()
         report = generate_coach_report(analysis, profile=profile)
         durata = time.perf_counter() - inizio
@@ -217,7 +225,8 @@ def bench_coach(runs: int) -> int:
             velocita.append(out / durata)
             uscite.append(out)
         stato = "ok" if ok else f"FALLITO ({report.get('warning', '')[:50]})"
-        print(f"  {i}/{runs}  {durata:6.1f}s   {tps}   in={usage.get('in', '?')} out={out or '?'}   {stato}")
+        print(f"\r  {i}/{runs}  {durata:6.1f}s   {tps}   "
+              f"in={usage.get('in', '?')} out={out or '?'}   {stato}          ")
 
     if not any(esiti):
         print("\n  Nessuna risposta valida: il tempo misurato e' quello del fallimento.\n")
