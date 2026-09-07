@@ -41,6 +41,14 @@ def parse_args() -> argparse.Namespace:
         help="List the models the configured coach backend can actually use, then exit.",
     )
     parser.add_argument(
+        "--bench-coach",
+        metavar="N",
+        nargs="?",
+        type=int,
+        const=3,
+        help="Misura quanto ci mette il coach configurato, N volte (default 3), ed esce.",
+    )
+    parser.add_argument(
         "--export",
         metavar="FILE",
         nargs="?",
@@ -141,6 +149,80 @@ def list_models() -> int:
     return 1
 
 
+# Il coach gira una volta a fine giro: finche' risponde prima che il pilota
+# tagli di nuovo il traguardo, la lentezza non si vede.
+BUDGET_GIRO_S = 60.0
+
+
+def bench_coach(runs: int) -> int:
+    """Quanto ci mette il coach su QUESTA macchina, con QUESTO backend.
+
+    Le stime a tavolino non servono a decidere: un modello locale va bene o
+    no a seconda della CPU che ce l'hai sotto. Qui si misura.
+    """
+    import os
+    import statistics
+    import time
+
+    from dotenv import load_dotenv
+
+    from analysis.delta import build_analysis_payload
+    from analysis.profile import attach_cost
+    from coach.report import generate_coach_report
+    from server.app import _demo_electronics, _demo_physics, hub
+    from telemetry.demo import DemoPlayer
+
+    load_dotenv()
+    base_url = os.getenv("COACH_BASE_URL", "").strip()
+    backend = base_url or ("Anthropic" if os.getenv("ANTHROPIC_API_KEY") else None)
+    if not backend:
+        print("Nessun modello configurato: senza backend non c'e' niente da misurare.",
+              file=sys.stderr)
+        print("Imposta COACH_BASE_URL oppure ANTHROPIC_API_KEY nel .env.", file=sys.stderr)
+        return 1
+
+    modello = os.getenv("COACH_MODEL") or os.getenv("ANTHROPIC_MODEL") or "(default)"
+    print(f"\n  Backend: {backend}\n  Modello: {modello}\n  Giri di prova: {runs}\n")
+
+    bundle = DemoPlayer().demo_bundle()
+    analysis = build_analysis_payload(
+        bundle["current"], bundle["reference"], bundle["corners"],
+        meta={"track": bundle["track"], "electronics": _demo_electronics()},
+        electronics=_demo_electronics(), physics=_demo_physics(),
+    )
+    profile = attach_cost(hub.driver_profile(), analysis.get("corners", []))
+
+    tempi, esiti = [], []
+    for i in range(1, runs + 1):
+        inizio = time.perf_counter()
+        report = generate_coach_report(analysis, profile=profile)
+        durata = time.perf_counter() - inizio
+        usage = report.get("usage") or {}
+        out = usage.get("out")
+        tps = f"{out / durata:5.1f} tok/s" if out and durata > 0 else "     —    "
+        ok = report.get("source") != "heuristic"
+        esiti.append(ok)
+        tempi.append(durata)
+        stato = "ok" if ok else f"FALLITO ({report.get('warning', '')[:50]})"
+        print(f"  {i}/{runs}  {durata:6.1f}s   {tps}   in={usage.get('in', '?')} out={out or '?'}   {stato}")
+
+    if not any(esiti):
+        print("\n  Nessuna risposta valida: il tempo misurato e' quello del fallimento.\n")
+        return 1
+
+    buoni = [t for t, ok in zip(tempi, esiti) if ok]
+    mediana = statistics.median(buoni)
+    print(f"\n  Mediana {mediana:.1f}s · minimo {min(buoni):.1f}s · massimo {max(buoni):.1f}s")
+    margine = BUDGET_GIRO_S / mediana if mediana else 0
+    if mediana <= BUDGET_GIRO_S:
+        print(f"  Sta nel budget di un giro ({BUDGET_GIRO_S:.0f}s): {margine:.1f}x di margine.")
+        print("  Il report e' pronto prima che tu tagli di nuovo il traguardo.\n")
+    else:
+        print(f"  Fuori dal budget di un giro ({BUDGET_GIRO_S:.0f}s).")
+        print("  Serve un modello piu' piccolo, meno token in uscita, o piu' CPU.\n")
+    return 0
+
+
 def export_diagnostics(target: str) -> int:
     """Esporta la diagnostica senza avviare il server."""
     import json
@@ -165,6 +247,8 @@ def main() -> int:
     args = parse_args()
     if args.list_models:
         return list_models()
+    if args.bench_coach is not None:
+        return bench_coach(args.bench_coach)
     if args.export is not None:
         return export_diagnostics(args.export)
     if args.cli:

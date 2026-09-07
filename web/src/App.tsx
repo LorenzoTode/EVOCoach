@@ -81,29 +81,57 @@ export default function App() {
     }
   }, []);
 
-  /** id null = giro dimostrativo; un id = un giro vero. */
+  /** id null = giro dimostrativo (sincrono); un id = giro vero (in sottofondo). */
   const analyze = useCallback(async (id: number | null) => {
     setLoading(true);
     setError(null);
     try {
-      const res =
-        id == null
-          ? await fetch("/api/analyze/demo", { method: "POST" })
-          : await fetch("/api/coach", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ use_demo: false, lap_id: id }),
-            });
+      if (id == null) {
+        const res = await fetch("/api/analyze/demo", { method: "POST" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setData((await res.json()) as AnalyzeResponse);
+        setLoading(false);
+        return;
+      }
+      // Con un modello locale l'analisi puo' durare mezzo minuto: si avvia e
+      // basta. Il risultato lo annuncia il server cambiando versione, e nel
+      // frattempo si continua a guidare guardando mappa e delta.
+      const res = await fetch("/api/coach/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ use_demo: false, lap_id: id }),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as AnalyzeResponse & { error?: string };
-      if (json.error) throw new Error(json.error);
-      setData(json);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Errore di rete");
-    } finally {
       setLoading(false);
     }
   }, []);
+
+  // Ritiro del report quando il server segnala una versione nuova.
+  const seenVersion = useRef(0);
+  useEffect(() => {
+    const state = live?.session?.analysis;
+    if (!state) return;
+    setLoading(state.running);
+    if (state.version === seenVersion.current) return;
+    seenVersion.current = state.version;
+    void (async () => {
+      try {
+        const res = await fetch("/api/coach/latest");
+        if (!res.ok) return;
+        const json = (await res.json()) as { report?: AnalyzeResponse & { error?: string } };
+        if (json.report && !json.report.error) {
+          setData(json.report);
+          setError(null);
+        } else if (json.report?.error) {
+          setError(json.report.error);
+        }
+      } catch {
+        /* il prossimo cambio di versione riprova */
+      }
+    })();
+  }, [live?.session?.analysis?.version, live?.session?.analysis?.running]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -159,25 +187,14 @@ export default function App() {
     shownTrack.current = track;
   }, [live?.track]);
 
-  // Analisi automatica: parte da sola al primo confronto possibile e a ogni
-  // nuovo giro valido, senza che il pilota debba toccare niente.
+  // L'analisi automatica a fine giro la decide il server, che sa quando un
+  // giro si chiude. Qui resta solo la demo, che non ha giri veri.
   useEffect(() => {
-    if (!entered) return;
-    if (isDemo) {
-      if (analyzed.current !== -1) {
-        analyzed.current = -1;
-        void analyze(null);
-      }
-      return;
-    }
-    const newest = laps[0]?.id;
-    // Serve un secondo giro valido: il primo non ha con cosa confrontarsi.
-    if (newest && validLaps >= 2 && analyzed.current !== newest) {
-      analyzed.current = newest;
-      setLapId(newest);
-      void analyze(newest);
-    }
-  }, [entered, isDemo, laps, validLaps, analyze]);
+    if (!entered || !isDemo) return;
+    if (analyzed.current === -1) return;
+    analyzed.current = -1;
+    void analyze(null);
+  }, [entered, isDemo, analyze]);
 
   const npos = live?.npos ?? 0;
   const map = live?.map;

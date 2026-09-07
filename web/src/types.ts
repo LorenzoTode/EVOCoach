@@ -51,6 +51,8 @@ export type SessionState = {
   invalid_laps: number;
   current_lap_valid: boolean;
   best_ms?: number | null;
+  /** Il server dice quando c'e' un report nuovo da ritirare. */
+  analysis?: { version: number; running: boolean };
   last_lap?: {
     lap_id: number;
     lap_time_ms: number | null;

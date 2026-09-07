@@ -503,6 +503,11 @@ def _openai_compat_report(
             model, base_url,
             usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"),
         )
+        parsed["usage"] = {
+            "in": usage.get("prompt_tokens"),
+            "out": usage.get("completion_tokens"),
+            "modello": model,
+        }
         return parsed
 
     raise last_error or RuntimeError("nessuna risposta utilizzabile")
@@ -631,6 +636,12 @@ def generate_coach_report(
         text = next(b.text for b in message.content if b.type == "text")
         parsed = json.loads(text)
         parsed["source"] = "anthropic"
+        parsed["usage"] = {
+            "in": message.usage.input_tokens,
+            "out": message.usage.output_tokens,
+            "cache_read": message.usage.cache_read_input_tokens or 0,
+            "modello": message.model,
+        }
 
         # L'euristica resta la rete di sicurezza sui setup: se il modello non ha
         # prodotto istruzioni operative, si usano quelle calcolate localmente.

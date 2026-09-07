@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import os
 import platform
 import sys
@@ -278,6 +279,13 @@ class LiveHub:
         self._tracks_dir = app_dir() / "data" / "tracks"
         self.journal = SessionJournal()
         self._last_beat = 0.0
+        # Il report vive fuori dal ciclo richiesta/risposta: con un modello
+        # locale l'analisi puo' durare mezzo minuto, e nessuno deve aspettare
+        # guardando una rotella mentre gia' sta guidando il giro dopo.
+        self._report: dict[str, Any] | None = None
+        self._report_version = 0
+        self._report_running = False
+        self._report_lock = threading.Lock()
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -406,6 +414,40 @@ class LiveHub:
         profile["track"] = track
         return profile
 
+    def start_analysis(self, lap_id: int | None = None, *, force_heuristic: bool = False) -> bool:
+        """Avvia l'analisi in un thread. False se ce n'e' gia' una in corso.
+
+        Un thread e non un task asincrono perche' il lavoro e' bloccante —
+        numpy e una richiesta HTTP — e deve stare fuori dal ciclo che legge
+        la telemetria a 15 Hz.
+        """
+        with self._report_lock:
+            if self._report_running:
+                return False
+            self._report_running = True
+
+        def lavora() -> None:
+            try:
+                result = _run_analysis(lap_id, force_heuristic=force_heuristic)
+                with self._report_lock:
+                    self._report = result
+                    self._report_version += 1
+            except Exception:
+                log.exception("Analisi fallita")
+                with self._report_lock:
+                    self._report = {"error": "analisi_fallita"}
+                    self._report_version += 1
+            finally:
+                with self._report_lock:
+                    self._report_running = False
+
+        threading.Thread(target=lavora, daemon=True, name="coach-analysis").start()
+        return True
+
+    def report_state(self) -> dict[str, Any]:
+        with self._report_lock:
+            return {"version": self._report_version, "running": self._report_running}
+
     def session_state(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Cosa deve mostrare l'interfaccia adesso.
 
@@ -443,6 +485,8 @@ class LiveHub:
             # Perche' l'ultimo giro e' stato scartato: senza questo, "0 giri
             # validi" dopo dieci giri e' un vicolo cieco.
             "last_lap": self._last_saved,
+            # Il client capisce da qui che c'e' un report nuovo da ritirare.
+            "analysis": self.report_state(),
         }
 
     def _reset_session(self, track: str | None) -> None:
@@ -526,6 +570,11 @@ class LiveHub:
             self.track_map.save(self._tracks_dir)
         except OSError as exc:
             log.warning("Tracciato non salvato: %s", exc)
+        # Due giri validi bastano a confrontare: da li' in poi ogni giro
+        # buono fa ripartire l'analisi, in sottofondo.
+        if valid and self._valid_laps >= 2:
+            self.start_analysis(lap_id)
+
         self.journal.event(
             "lap",
             lap_id=lap_id,
@@ -884,11 +933,25 @@ def analyze_demo() -> dict[str, Any]:
     }
 
 
-@app.post("/api/coach")
-def coach(req: CoachRequest) -> dict[str, Any]:
-    if req.use_demo or req.lap_id is None:
-        return analyze_demo()
+def _run_analysis(
+    lap_id: int | None,
+    reference_lap_id: int | None = None,
+    *,
+    force_heuristic: bool = False,
+) -> dict[str, Any]:
+    """Analisi completa di un giro. Bloccante: chi la chiama decide dove girarla.
 
+    Se lap_id manca prende il giro valido piu' recente — e' il caso normale
+    quando l'analisi parte da sola a fine giro.
+    """
+    if lap_id is None:
+        recenti = [r for r in hub.db.list_laps(track=hub._track, limit=5) if r.get("valid")]
+        if not recenti:
+            return {"error": "no_valid_lap"}
+        lap_id = recenti[0]["id"]
+
+    req = CoachRequest(use_demo=False, lap_id=lap_id,
+                       reference_lap_id=reference_lap_id, force_heuristic=force_heuristic)
     lap = hub.db.get_lap(req.lap_id)
     if not lap:
         return {"error": "lap_not_found"}
@@ -990,6 +1053,30 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         "meta": analysis["meta"],
         "profile": profile,
     }
+
+
+@app.post("/api/coach")
+def coach(req: CoachRequest) -> dict[str, Any]:
+    """Analisi sincrona: si aspetta la risposta. Resta per la demo e per gli
+    script; l'interfaccia usa la via asincrona."""
+    if req.use_demo or req.lap_id is None:
+        return analyze_demo()
+    return _run_analysis(req.lap_id, req.reference_lap_id, force_heuristic=req.force_heuristic)
+
+
+@app.post("/api/coach/start")
+def coach_start(req: CoachRequest) -> dict[str, Any]:
+    """Avvia l'analisi e torna subito. Il risultato si ritira da /api/coach/latest
+    quando la versione in session.analysis cambia."""
+    started = hub.start_analysis(req.lap_id, force_heuristic=req.force_heuristic)
+    return {"started": started, **hub.report_state()}
+
+
+@app.get("/api/coach/latest")
+def coach_latest() -> dict[str, Any]:
+    with hub._report_lock:
+        report = hub._report
+    return {**hub.report_state(), "report": report}
 
 
 @app.get("/api/setup/live")
