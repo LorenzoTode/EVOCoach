@@ -31,6 +31,7 @@ from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
 from storage.diagnostics import app_version, install_id, setup_logging, tail_log
+from storage.journal import SessionJournal
 from storage.paths import app_dir, bundle_dir
 from telemetry.demo import DemoPlayer, MONZA_CORNERS
 from telemetry.track_map import TrackMapBuilder
@@ -275,6 +276,8 @@ class LiveHub:
         self._last_diag: dict[str, Any] = {}
         self._last_saved: dict[str, Any] | None = None
         self._tracks_dir = app_dir() / "data" / "tracks"
+        self.journal = SessionJournal()
+        self._last_beat = 0.0
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -298,6 +301,7 @@ class LiveHub:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self.journal.close()
         if self.client:
             self.client.close()
         self.db.close()
@@ -443,10 +447,16 @@ class LiveHub:
 
     def _reset_session(self, track: str | None) -> None:
         """Pista cambiata: i conteggi della sessione precedente non valgono piu'."""
+        precedente = self._track
         self._track = track
         if track:
             self.track_map.reset(track)
-            self.track_map.load(self._tracks_dir, track)
+            ripreso = self.track_map.load(self._tracks_dir, track)
+            self.journal.event("track_change", da=precedente, a=track)
+            self.journal.start(
+                track, None, versione=app_version(), installazione=install_id(),
+                tracciato_ripreso=ripreso, modo=self.mode, da_pista=precedente,
+            )
         self._valid_laps = 0
         self._invalid_laps = 0
         self._lap_valid = True
@@ -488,6 +498,10 @@ class LiveHub:
         if self._session_id is None:
             self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
 
+        # Calcolate una volta, mentre i campioni sono in mano: servono sia al
+        # record del giro sia al diario.
+        metrics = lap_metrics(samples, _track_corners(frame.get("track"))) if valid else {}
+
         lap_id = self.db.save_lap(
             self._session_id,
             lap_number=self._last_lap_no,
@@ -500,9 +514,7 @@ class LiveHub:
                 "electronics": self._last_electronics,
                 "physics_setup": self._last_physics_setup,
                 "invalid_reasons": reasons,
-                # Calcolate ora, una volta, mentre i campioni sono in mano:
-                # ricavarle dopo vorrebbe dire rileggere il giro dal database.
-                "metrics": lap_metrics(samples, _track_corners(frame.get("track"))) if valid else {},
+                "metrics": metrics,
             },
         )
         if valid:
@@ -514,6 +526,18 @@ class LiveHub:
             self.track_map.save(self._tracks_dir)
         except OSError as exc:
             log.warning("Tracciato non salvato: %s", exc)
+        self.journal.event(
+            "lap",
+            lap_id=lap_id,
+            numero=self._last_lap_no,
+            tempo_ms=lap_time,
+            valido=valid,
+            motivi_scarto=reasons,
+            campioni=len(samples),
+            npos_span=round(span, 3),
+            metriche=metrics,
+            electronics=self._last_electronics,
+        )
         self._last_saved = {
             "lap_id": lap_id,
             "lap_time_ms": lap_time,
@@ -529,8 +553,14 @@ class LiveHub:
             self._reset_session(track)
         elif track and not self._track:
             self._track = track
-            if self.track_map.load(self._tracks_dir, track):
+            ripreso = self.track_map.load(self._tracks_dir, track)
+            if ripreso:
                 log.info("Tracciato di %s ripreso dalle sessioni precedenti", track)
+            self.journal.start(
+                track, frame.get("car"),
+                versione=app_version(), installazione=install_id(),
+                tracciato_ripreso=ripreso, modo=self.mode,
+            )
 
         sample = {
             "t_ms": frame.get("t_ms") or 0,
@@ -566,6 +596,21 @@ class LiveHub:
 
         if self._crossed_line(frame):
             self._close_lap(frame)
+
+        now = time.time()
+        if now - self._last_beat >= 10.0:
+            self._last_beat = now
+            self.journal.event(
+                "beat",
+                giro=frame.get("lap"),
+                npos=round(float(frame.get("npos") or 0.0), 3),
+                speed=frame.get("speed"),
+                t_ms=frame.get("t_ms"),
+                giro_valido=self._lap_valid,
+                in_pit=frame.get("in_pit"),
+                validi=self._valid_laps,
+                scartati=self._invalid_laps,
+            )
 
         # Giro abbandonato: si butta il buffer invece di scriverlo nel
         # database e di tenerlo in memoria per tutta la sessione.
@@ -705,6 +750,11 @@ def _build_export(include_log: bool = True) -> dict[str, Any]:
         "profili": {t: hub.driver_profile(t) for t in tracks},
         "giri": laps,
         "log": tail_log() if include_log else [],
+        # La sessione intera, evento per evento: il log a rotazione tiene le
+        # ultime righe, questo tiene tutto quello che e' successo dal via.
+        "diario": (_diario := hub.journal.read_current_or_last())[0],
+        "diario_file": _diario[1],
+        "sessioni_precedenti": SessionJournal.list_sessions(),
     }
 
 
@@ -817,6 +867,10 @@ def analyze_demo() -> dict[str, Any]:
     # dal singolo giro: hanno dietro piu' giri e una motivazione verificabile.
     analysis["setup"] = setup_from_profile(profile, electronics) + analysis.get("setup", [])
     coach = generate_coach_report(analysis, profile=profile)
+    hub.journal.event(
+        "coach_demo", sorgente=coach.get("source"), warning=coach.get("warning"),
+        summary=coach.get("summary"),
+    )
     return {
         "analysis": analysis,
         "profile": profile,
@@ -897,6 +951,28 @@ def coach(req: CoachRequest) -> dict[str, Any]:
     analysis["setup"] = setup_from_profile(profile, electronics) + analysis.get("setup", [])
     report = generate_coach_report(
         analysis, force_heuristic=req.force_heuristic, history=history, profile=profile
+    )
+    hub.journal.event(
+        "coach",
+        lap_id=analysis["meta"].get("lap_id"),
+        riferimento=analysis["meta"].get("reference_lap_id"),
+        delta_ms=round(analysis["delta"]["final_delta_ms"]),
+        curve_peggiori=[
+            {"nome": c["name"], "perso_ms": round(c["loss_ms"])}
+            for c in analysis.get("corners", [])[:5]
+        ],
+        metriche=analysis.get("metrics", {}),
+        profilo_pronto=bool(profile.get("ready")),
+        tratti=[t["metric"] for t in profile.get("tratti", [])],
+        sorgente=report.get("source"),
+        warning=report.get("warning"),
+        summary=report.get("summary"),
+        driver_note=report.get("driver_note"),
+        setup=[
+            {"parametro": t.get("parameter"), "da": t.get("current"),
+             "a": t.get("target"), "perche": t.get("because")}
+            for t in report.get("setup", [])
+        ],
     )
     path = [
         {"x": s["x"], "z": s["z"], "npos": s.get("npos")}
