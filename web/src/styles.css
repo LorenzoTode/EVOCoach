@@ -1071,3 +1071,25 @@ body,
   margin: 0;
   padding: 0;
 }
+
+/* Da cosa nasce una modifica di assetto: senza questo il consiglio arriva
+   come un verdetto, e un verdetto non si impara. */
+.tip-because {
+  margin: 8px 0 6px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: rgba(15, 143, 138, 0.08);
+  border-left: 3px solid var(--accent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tip-because span {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 2px;
+}

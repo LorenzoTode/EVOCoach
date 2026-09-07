@@ -38,6 +38,12 @@ function TipList({ tips, setupMode = false }: { tips: Tip[]; setupMode?: boolean
               ) : null}
             </div>
           ) : null}
+          {t.because ? (
+            <p className="tip-because">
+              <span>{t.from_profile ? "Dal tuo profilo" : "Perché"}</span>
+              {t.because}
+            </p>
+          ) : null}
           <p>{t.detail}</p>
           {t.corners && t.corners.length ? (
             <p className="tip-corners">{t.corners.join(" · ")}</p>

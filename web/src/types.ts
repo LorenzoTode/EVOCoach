@@ -35,6 +35,9 @@ export type Tip = {
   current?: string | number;
   target?: string | number;
   action?: string;
+  /** Da cosa nasce la modifica: l'abitudine o il dato che l'ha motivata. */
+  because?: string;
+  from_profile?: boolean;
 };
 
 export type SessionState = {

@@ -58,8 +58,13 @@ COME USARE IL PROFILO
 8. L'assetto va costruito attorno a come guida davvero, non attorno al pilota ideale.
    Chi apre il gas presto per abitudine ha bisogno di trazione in uscita (differenziale
    in power piu' chiuso, TC piu' alto); chi frena sempre a fondo ha bisogno di stabilita'
-   in staccata (bias piu' indietro, ABS piu' alto). Dillo esplicitamente nel consiglio:
-   "dato che tendi a...".
+   in staccata (bias piu' indietro, ABS piu' alto); chi sovrappone i pedali ha bisogno di
+   stabilita' in ingresso prima di qualunque altra cosa; chi resta lungo in rilascio non
+   ha un problema di assetto ma di punto di frenata.
+   Ogni modifica deve compilare "because" con cio' da cui nasce, citando il numero. Una
+   modifica che non sai motivare con un dato non va proposta: toglila.
+   Quando l'abitudine e' la causa, cambiare l'assetto la nasconde ma non la corregge:
+   dillo, e affianca sempre l'esercizio del profilo alla modifica.
 9. Se "consistenza_s" supera 1 secondo, la priorita' non e' il setup ne' la traiettoria:
    e' ripetere lo stesso giro. Dillo.
 10. Un consiglio di guida senza un'azione verificabile e' inutile. Quando un tratto ha un
@@ -107,10 +112,19 @@ REPORT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "description": "Istruzione operativa, es. 'Aumenta TC da 3 a 4 (+1)'",
                     },
+                    "because": {
+                        "type": "string",
+                        "description": (
+                            "Da cosa nasce questa modifica. Se viene da un'abitudine del "
+                            "profilo, nominala e cita il numero: 'apri il gas presto nel 60% "
+                            "delle curve'. Se viene da un dato del giro, cita quel dato. "
+                            "Mai una motivazione generica."
+                        ),
+                    },
                 },
                 "required": [
                     "severity", "title", "detail", "menu",
-                    "parameter", "current", "target", "action",
+                    "parameter", "current", "target", "action", "because",
                 ],
                 "additionalProperties": False,
             },

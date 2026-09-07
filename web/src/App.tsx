@@ -142,9 +142,25 @@ export default function App() {
     if (entered) void loadLaps();
   }, [entered, loadLaps, validLaps]);
 
+  // Cambio pista: l'analisi precedente parla di un altro circuito — curve,
+  // perdite e consigli non c'entrano piu' niente. Tenerla a schermo e' peggio
+  // che non mostrare nulla, perche' sembra ancora valida.
+  const analyzed = useRef<number | null>(null);
+  const shownTrack = useRef<string | null>(null);
+  useEffect(() => {
+    const track = live?.track ?? null;
+    if (!track) return;
+    if (shownTrack.current && shownTrack.current !== track) {
+      setData(null);
+      setLaps([]);
+      setLapId(null);
+      analyzed.current = null;
+    }
+    shownTrack.current = track;
+  }, [live?.track]);
+
   // Analisi automatica: parte da sola al primo confronto possibile e a ogni
   // nuovo giro valido, senza che il pilota debba toccare niente.
-  const analyzed = useRef<number | null>(null);
   useEffect(() => {
     if (!entered) return;
     if (isDemo) {

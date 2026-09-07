@@ -19,7 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from analysis.delta import build_analysis_payload
-from analysis.profile import attach_cost, build_driver_profile, lap_metrics
+from analysis.profile import (
+    attach_cost,
+    build_driver_profile,
+    lap_metrics,
+    setup_from_profile,
+)
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
@@ -73,17 +78,30 @@ ELECTRONICS_KEYS = (
 
 
 def _track_corners(track: str | None) -> list[dict[str, Any]]:
-    if not track:
-        return MONZA_CORNERS
-    try:
-        from acevo.catalogs.tracks import select_track_profile
+    """Curve del circuito, dal catalogo AC EVO.
 
-        _key, profile = select_track_profile(track_name=track)
-        if profile and profile.get("corners"):
-            return profile["corners"]
-    except Exception:
-        pass
-    return MONZA_CORNERS
+    find_track_by_name risolve i nomi come li pubblica il gioco, spazi
+    compresi; select_track_profile fallisce su tutto cio' che non e' una
+    parola sola o gia' uno slug, e per "Brands Hatch" o "Laguna Seca"
+    restituiva nulla.
+
+    Senza corrispondenza si torna una lista vuota, mai le curve di un'altra
+    pista: leggere "Parabolica" a Brands Hatch e' peggio che non leggere
+    niente, perche' sembra un dato ed e' un errore.
+    """
+    if not track:
+        return []
+    try:
+        from acevo.catalogs.tracks import find_track_by_name
+
+        _key, profile = find_track_by_name(track)
+        corners = (profile or {}).get("corners")
+        if corners:
+            return corners
+    except Exception as exc:
+        log.warning("Catalogo curve non consultabile per %r: %s", track, exc)
+    log.info("Nessuna curva a catalogo per %r: la mappa restera' senza nomi", track)
+    return []
 
 
 def _world_xz(physics: dict[str, Any], graphics: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -725,6 +743,9 @@ def analyze_demo() -> dict[str, Any]:
         physics=physics,
     )
     profile = attach_cost(hub.driver_profile(), analysis.get("corners", []))
+    # Le modifiche che nascono da un'abitudine vengono prima di quelle dedotte
+    # dal singolo giro: hanno dietro piu' giri e una motivazione verificabile.
+    analysis["setup"] = setup_from_profile(profile, electronics) + analysis.get("setup", [])
     coach = generate_coach_report(analysis, profile=profile)
     return {
         "analysis": analysis,
@@ -803,6 +824,9 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         if r.get("id") != req.lap_id and r.get("lap_time_ms")
     ]
     profile = attach_cost(hub.driver_profile(track), analysis.get("corners", []))
+    # Le modifiche che nascono da un'abitudine vengono prima di quelle dedotte
+    # dal singolo giro: hanno dietro piu' giri e una motivazione verificabile.
+    analysis["setup"] = setup_from_profile(profile, electronics) + analysis.get("setup", [])
     report = generate_coach_report(
         analysis, force_heuristic=req.force_heuristic, history=history, profile=profile
     )
