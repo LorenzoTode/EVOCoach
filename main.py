@@ -41,6 +41,13 @@ def parse_args() -> argparse.Namespace:
         help="List the models the configured coach backend can actually use, then exit.",
     )
     parser.add_argument(
+        "--export",
+        metavar="FILE",
+        nargs="?",
+        const="",
+        help="Scrive un file di diagnostica (giri, profili, log) ed esce.",
+    )
+    parser.add_argument(
         "--cli",
         action="store_true",
         help="Legacy console telemetry monitor instead of the web app.",
@@ -134,10 +141,32 @@ def list_models() -> int:
     return 1
 
 
+def export_diagnostics(target: str) -> int:
+    """Esporta la diagnostica senza avviare il server."""
+    import json
+    from pathlib import Path
+
+    from server.app import _build_export
+    from storage.paths import app_dir
+
+    payload = _build_export()
+    path = Path(target) if target else (
+        app_dir() / f"acevo-coach-{payload['installazione']}.json"
+    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    size = path.stat().st_size / 1024
+    print(f"\n  Scritto: {path}  ({size:.0f} KB)")
+    print(f"  Giri: {len(payload['giri'])} · piste: {', '.join(payload['piste']) or 'nessuna'}")
+    print("  Non contiene la chiave API ne' percorsi del disco.\n")
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     if args.list_models:
         return list_models()
+    if args.export is not None:
+        return export_diagnostics(args.export)
     if args.cli:
         from telemetry.live import LiveSharedMemoryClient
 

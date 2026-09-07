@@ -1093,3 +1093,17 @@ body,
   font-weight: 700;
   margin-bottom: 2px;
 }
+
+.btn.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(244, 247, 250, 0.82);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn.ghost:hover {
+  border-color: var(--accent);
+  color: #fff;
+}

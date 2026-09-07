@@ -283,6 +283,14 @@ export default function App() {
                   ))}
                 </select>
               ) : null}
+              <a
+                className="btn ghost"
+                href="/api/export"
+                download
+                title="Scarica un file con giri, profilo e log da mandare a chi guarda i dati"
+              >
+                Esporta
+              </a>
               <button
                 type="button"
                 className="btn"

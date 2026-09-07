@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import platform
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -14,7 +16,7 @@ from typing import Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -28,6 +30,7 @@ from analysis.profile import (
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
+from storage.diagnostics import app_version, install_id, setup_logging, tail_log
 from storage.paths import app_dir, bundle_dir
 from telemetry.demo import DemoPlayer, MONZA_CORNERS
 from telemetry.track_map import TrackMapBuilder
@@ -37,6 +40,7 @@ from telemetry.track_map import TrackMapBuilder
 _ENV_FILE = app_dir() / ".env"
 load_dotenv(_ENV_FILE if _ENV_FILE.exists() else None)
 
+setup_logging()
 log = logging.getLogger(__name__)
 
 ROOT = bundle_dir()
@@ -384,15 +388,13 @@ class LiveHub:
 
     def driver_profile(self, track: str | None = None) -> dict[str, Any]:
         """Profilo costruito sui giri validi gia' in archivio, dal piu' recente."""
-        import json as _json
-
         laps: list[dict[str, Any]] = []
         for row in self.db.list_laps(track=track, limit=60):
             if not row.get("valid"):
                 continue
             full = self.db.get_lap(row["id"]) or {}
             try:
-                meta = _json.loads(full.get("meta_json") or "{}")
+                meta = json.loads(full.get("meta_json") or "{}")
             except (ValueError, TypeError):
                 meta = {}
             laps.append({"lap_time_ms": row.get("lap_time_ms"), "metrics": meta.get("metrics") or {}})
@@ -650,6 +652,74 @@ def driver_profile(track: str | None = None) -> dict[str, Any]:
     return hub.driver_profile(track or hub._track)
 
 
+def _build_export(include_log: bool = True) -> dict[str, Any]:
+    """Tutto cio' che serve a capire una sessione, in un file solo.
+
+    Volutamente senza campioni grezzi: sono decine di migliaia di righe e non
+    servono a diagnosticare. Restano i tempi, le metriche di comportamento e
+    il profilo — cioe' cio' che si confronta fra piloti diversi.
+    """
+    laps = []
+    for row in hub.db.list_laps(limit=200, track=None):
+        full = hub.db.get_lap(row["id"]) or {}
+        try:
+            meta = json.loads(full.get("meta_json") or "{}")
+        except (ValueError, TypeError):
+            meta = {}
+        laps.append(
+            {
+                "lap": row.get("lap_number"),
+                "time_ms": row.get("lap_time_ms"),
+                "valid": bool(row.get("valid")),
+                "track": row.get("track"),
+                "car": row.get("car"),
+                "at": row.get("created_at"),
+                "invalid_reasons": meta.get("invalid_reasons") or [],
+                "metrics": meta.get("metrics") or {},
+                "electronics": meta.get("electronics") or {},
+            }
+        )
+
+    tracks = sorted({lap["track"] for lap in laps if lap["track"]})
+    return {
+        "formato": 1,
+        "generato": time.time(),
+        "installazione": install_id(),
+        "versione_app": app_version(),
+        "python": sys.version.split()[0],
+        "sistema": platform.system(),
+        "coach": {
+            # Quale motore risponde, MAI la chiave.
+            "backend": "esterno" if os.getenv("COACH_BASE_URL") else
+                       ("anthropic" if os.getenv("ANTHROPIC_API_KEY") else "locale"),
+            "modello": os.getenv("COACH_MODEL") or os.getenv("ANTHROPIC_MODEL") or "",
+        },
+        "sessione": hub.session_state(hub.latest),
+        "telemetria_grezza": hub._last_diag,
+        "ultimo_giro_archiviato": hub._last_saved,
+        "mappa": {
+            "copertura": (hub.latest.get("map") or {}).get("coverage"),
+            "punti": len((hub.latest.get("map") or {}).get("path") or []),
+        },
+        "piste": tracks,
+        "profili": {t: hub.driver_profile(t) for t in tracks},
+        "giri": laps,
+        "log": tail_log() if include_log else [],
+    }
+
+
+@app.get("/api/export")
+def export_session() -> Response:
+    """File unico da mandare a chi deve guardare i dati."""
+    payload = _build_export()
+    name = f"acevo-coach-{payload['installazione']}-{int(payload['generato'])}.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=1),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/api/debug/telemetry")
 def debug_telemetry() -> dict[str, Any]:
     """Cosa dice il gioco e cosa ne capisce l'app.
@@ -789,8 +859,6 @@ def coach(req: CoachRequest) -> dict[str, Any]:
         return {"error": "no_reference"}
     reference = hub.db.get_samples(ref_id)
     track = lap.get("track") or "monza"
-    import json
-
     meta_raw = lap.get("meta_json") or "{}"
     try:
         lap_meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
