@@ -518,10 +518,18 @@ class LiveHub:
             if self._report_running:
                 return False
             self._report_running = True
+        # Con un modello locale l'analisi dura mezzo minuto: in mezzo il volante
+        # puo' passare all'altro pilota. Un report che arriva dopo il cambio
+        # parlerebbe delle abitudini di chi non sta piu' guidando.
+        chi = self.driver
 
         def lavora() -> None:
             try:
                 result = _run_analysis(lap_id, force_heuristic=force_heuristic)
+                if self.driver != chi:
+                    log.info("Report scartato: era di %s, ora guida %s",
+                             self.drivers.name(chi), self.drivers.name())
+                    return
                 with self._report_lock:
                     self._report = result
                     self._report_version += 1
