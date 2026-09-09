@@ -14,76 +14,50 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5"
 
-SYSTEM_PROMPT = """Sei il race engineer di un pilota su Assetto Corsa EVO. Analizzi la telemetria
-di un giro confrontato con un giro di riferimento e dai istruzioni operative.
+SYSTEM_PROMPT = """Sei il race engineer di un pilota su Assetto Corsa EVO.
 
 COME LEGGERE I DATI
-- npos: posizione sul giro, 0.0 = linea del traguardo, 1.0 = fine giro.
-- final_delta_ms: delta totale in millisecondi. POSITIVO = il pilota e' PIU' LENTO del riferimento.
-- loss_zones: i tratti dove il pilota sta attivamente perdendo tempo. loss_ms e' il tempo perso
-  in quel solo tratto. Sono ordinate dalla perdita maggiore: qui c'e' il tempo da recuperare.
-- corners: curve ordinate per tempo perso, con velocita' in ingresso / apice / uscita
-  confrontate con il riferimento (speed_gap_kmh negativo = il pilota e' piu' lento).
-- metrics: overlap_pct = % di giro con gas e freno insieme; coast_pct = % di giro in rilascio
-  senza gas ne' freno; max_slip = picco di slittamento pneumatici (0-1, sopra 0.35 e' grip perso).
-- electronics: i valori ATTUALI letti dal gioco, con il range legale per questa vettura.
-- candidate_setup_changes: modifiche gia' calcolate da euristiche locali. Sono CANDIDATE,
-  non verita': selezionale, scartale o correggile in base ai dati.
-- profilo: come guida QUESTO pilota, non com'e' andato questo giro. "abitudini" sono
-  mediane sugli ultimi giri validi; "tratti" sono comportamenti che superano la soglia
-  abbastanza spesso da essere un modo di guidare. "consistenza_s" e' il distacco medio
-  dal proprio miglior giro; "tendenza_s" negativa significa che sta migliorando.
-  Dentro ogni tratto: "corners" sono le curve dove si manifesta di piu';
-  "tempo_perso_in_quelle_curve_ms" e' il tempo perso in quelle curve — una correlazione,
-  non una prova che il vizio sia la causa: dillo con prudenza ("nelle curve dove lo fai
-  perdi X"), mai "questo vizio ti costa X"; "drill" e' l'esercizio gia' scritto per
-  correggerlo e "check" come capire se ha funzionato; "trend" negativo = sta calando.
+npos: posizione sul giro, 0.0 = traguardo. final_delta_ms POSITIVO = il pilota e' PIU' LENTO.
+loss_zones: tratti dove sta perdendo tempo, ordinati per perdita. corners: curve con velocita'
+in ingresso/apice/uscita contro il riferimento. metrics: overlap_pct = gas e freno insieme;
+coast_pct = ne' gas ne' freno; max_slip sopra 0.35 = aderenza persa. electronics: valori
+ATTUALI dal gioco col range legale. candidate_setup_changes: proposte gia' calcolate, da
+selezionare o scartare, non verita'.
+profilo: come guida SEMPRE, non com'e' andato oggi. "tratti" = vizi ricorrenti, ognuno con le
+curve dove succede, il tempo perso li' (correlazione, non causa), un "drill" gia' scritto e un
+"check". "consistenza_s" = distacco medio dal proprio miglior giro.
 
-REGOLE NON NEGOZIABILI
-1. Ogni valore che proponi deve stare dentro il range legale indicato in electronics.
-   Se il range non e' noto, non proporre quel parametro.
-2. "current" deve essere il valore realmente letto dal gioco, mai inventato.
-3. Ogni "detail" deve citare un numero preso dai dati (ms persi, km/h di gap, %, slip).
-   Un consiglio senza numero e' inutile: scartalo.
-4. Un problema di tecnica non si risolve con l'assetto. Se overlap_pct, coast_pct o max_slip
-   indicano un errore di guida, mettilo in "driving" e NON compensarlo con l'elettronica.
-5. Cambia un parametro alla volta per area. Non proporre TC e diff e ammortizzatori insieme
-   per lo stesso sintomo: il pilota non saprebbe cosa ha funzionato.
-6. Se il pilota e' piu' veloce del riferimento (final_delta_ms negativo), dillo e concentrati
-   su dove resta margine, non inventare problemi.
+REGOLE
+1. Ogni valore proposto deve stare nel range legale di electronics. Range ignoto = non proporlo.
+2. "current" e' il valore letto dal gioco, mai inventato.
+3. Ogni "detail" e ogni "because" citano un numero dei dati. Senza numero, scarta la voce.
+4. Un errore di tecnica non si corregge con l'assetto: mettilo in "driving".
+5. Un parametro alla volta per sintomo, o non si capisce cosa ha funzionato.
+6. Se final_delta_ms e' negativo il pilota e' piu' veloce: dillo, non inventare problemi.
+7. Un vizio nei "tratti" e' un'abitudine, un errore isolato e' un episodio: trattali diversamente.
+8. Costruisci l'assetto su come guida davvero: chi apre presto vuole trazione in uscita, chi
+   frena a fondo stabilita' in staccata, chi sovrappone i pedali stabilita' in ingresso, chi
+   resta in rilascio non ha un problema di assetto ma di punto di frenata. Quando l'abitudine
+   e' la causa, di' che l'assetto la nasconde e affianca il "drill" del profilo, senza inventarne.
+9. Se "consistenza_s" supera 1 secondo la priorita' non e' l'assetto: e' ripetere lo stesso giro.
+10. Ordina per tempo recuperabile. Se una loss_zone vale oltre il 40% del delta, nominala nel summary.
 
-COME USARE IL PROFILO
-7. Distingui l'episodio dall'abitudine. Un errore in una curva sola e' un episodio:
-   dillo e passa oltre. Un comportamento presente nei "tratti" e' un'abitudine, e va
-   affrontato come tale — cita da quanti giri lo fa.
-8. L'assetto va costruito attorno a come guida davvero, non attorno al pilota ideale.
-   Chi apre il gas presto per abitudine ha bisogno di trazione in uscita (differenziale
-   in power piu' chiuso, TC piu' alto); chi frena sempre a fondo ha bisogno di stabilita'
-   in staccata (bias piu' indietro, ABS piu' alto); chi sovrappone i pedali ha bisogno di
-   stabilita' in ingresso prima di qualunque altra cosa; chi resta lungo in rilascio non
-   ha un problema di assetto ma di punto di frenata.
-   Ogni modifica deve compilare "because" con cio' da cui nasce, citando il numero. Una
-   modifica che non sai motivare con un dato non va proposta: toglila.
-   Quando l'abitudine e' la causa, cambiare l'assetto la nasconde ma non la corregge:
-   dillo, e affianca sempre l'esercizio del profilo alla modifica.
-9. Se "consistenza_s" supera 1 secondo, la priorita' non e' il setup ne' la traiettoria:
-   e' ripetere lo stesso giro. Dillo.
-10. Un consiglio di guida senza un'azione verificabile e' inutile. Quando un tratto ha un
-   "drill", riportalo come azione — puoi riscriverlo piu' corto, non cambiarne la sostanza
-   ne' inventarne uno tuo — e nomina le curve in cui provarlo. Il pilota deve poter uscire
-   dai box sapendo cosa fare nei prossimi due giri e come accorgersi che sta funzionando.
+LUNGHEZZA — vincoli, non preferenze
+Massimo 3 voci in setup, 3 in trajectory, 3 in driving. Meglio 2 precise che 3 generiche.
+"detail" e "because": una frase, massimo 20 parole. "title": massimo 6 parole.
+"summary": massimo 2 frasi. Italiano tecnico, seconda persona, niente incoraggiamenti.
+"""
 
-PRIORITA'
-Ordina per tempo recuperabile. Una curva da 300 ms viene prima di una da 40 ms.
-Se una singola loss_zone vale piu' del 40% del delta totale, il summary deve nominarla.
-
-STILE E LUNGHEZZA — vincoli, non preferenze
-Massimo 5 voci in setup, 4 in trajectory, 4 in driving. Meglio 2 precise che 5 generiche:
-se hai due cose da dire, scrivi due voci e fermati.
-Ogni "detail" al massimo due frasi. Ogni "title" al massimo sei parole.
-Il summary al massimo tre frasi.
-Italiano tecnico, seconda persona singolare, niente giri di parole, niente incoraggiamenti,
-nessuna ripetizione fra una voce e l'altra.
+# Serve solo quando lo schema non viene applicato dal provider: un modello
+# piccolo, lasciato senza vincolo, non sa che forma deve avere la risposta.
+FORMATO_JSON = """
+Rispondi SOLO con JSON valido, niente markdown, niente testo prima o dopo.
+{"summary":"...","driver_note":"...",
+ "setup":[{"severity":"high|medium|low","title":"...","detail":"...","menu":"...",
+           "parameter":"...","current":"...","target":"...","action":"...","because":"..."}],
+ "trajectory":[{"severity":"...","title":"...","detail":"...","corner":"...","npos":0.5}],
+ "driving":[{"severity":"...","title":"...","detail":"..."}]}
+Liste vuote [] se non hai dati sufficienti.
 """
 
 _TIP_PROPS = {
@@ -101,7 +75,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         },
         "setup": {
             "type": "array",
-            "maxItems": 5,
+            "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": {
@@ -136,7 +110,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         },
         "trajectory": {
             "type": "array",
-            "maxItems": 4,
+            "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": {
@@ -157,7 +131,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         },
         "driving": {
             "type": "array",
-            "maxItems": 4,
+            "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": _TIP_PROPS,
@@ -409,6 +383,26 @@ def _post_json(url: str, payload: dict[str, Any], api_key: str, timeout: float) 
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _parse_json_loose(text: str) -> dict[str, Any] | None:
+    """JSON dalla risposta, anche se il modello ci ha messo del testo intorno.
+
+    I modelli piccoli premettono volentieri una frase di cortesia al JSON.
+    Buttare via una risposta buona per quella e' uno spreco: si cerca il primo
+    '{' e l'ultimo '}' e si riprova.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    inizio, fine = text.find("{"), text.rfind("}")
+    if inizio < 0 or fine <= inizio:
+        return None
+    try:
+        return json.loads(text[inizio : fine + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 def _strip_fences(text: str) -> str:
     """Alcuni modelli incorniciano il JSON in un blocco markdown."""
     text = text.strip()
@@ -434,20 +428,22 @@ def _openai_compat_report(
         raise ValueError("COACH_MODEL non impostato")
 
     compact = _compact_analysis(analysis, history, profile)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "Analizza questo giro e dammi il piano di lavoro.\n\n"
-                + json.dumps(compact, ensure_ascii=False, sort_keys=True)
-            ),
-        },
-    ]
+    dati = json.dumps(compact, ensure_ascii=False, sort_keys=True)
+
+    def messaggi(con_formato: bool) -> list[dict[str, str]]:
+        """Il formato si spiega solo quando lo schema non lo impone gia'."""
+        richiesta = "Analizza questo giro e dammi il piano di lavoro."
+        if con_formato:
+            richiesta += "\n" + FORMATO_JSON
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"{richiesta}\n\nDATI:\n{dati}"},
+        ]
+
     base = {
         "model": model,
-        "messages": messages,
-        "temperature": 0.2,
+        # Zero: il compito e' selezionare e riferire dati, non inventare.
+        "temperature": 0,
         # Un tetto esplicito: senza, un modello piccolo puo' produrre venti
         # voci di setup invece di cinque e triplicare il tempo di risposta.
         "max_tokens": max_tokens,
@@ -458,20 +454,15 @@ def _openai_compat_report(
     attempts: list[dict[str, Any]] = [
         {
             **base,
+            "messages": messaggi(False),
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": "coach_report",
-                    "strict": True,
-                    # Con i limiti: se il provider li rifiuta, la degradazione
-                    # sotto riprova senza. Un modello piccolo senza tetto sulle
-                    # liste ne produce quante gliene vengono.
-                    "schema": REPORT_SCHEMA,
-                },
+                "json_schema": {"name": "coach_report", "strict": True, "schema": REPORT_SCHEMA},
             },
         },
         {
             **base,
+            "messages": messaggi(False),
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -481,11 +472,10 @@ def _openai_compat_report(
                 },
             },
         },
-        {**base, "response_format": {"type": "json_object"}},
-        base,
+        # Da qui in giu' nessuno impone la forma: va scritta nel messaggio.
+        {**base, "messages": messaggi(True), "response_format": {"type": "json_object"}},
+        {**base, "messages": messaggi(True)},
     ]
-
-    import time
 
     # Il timeout vale per l'intera analisi, non per ogni tentativo: con quattro
     # livelli di degradazione e tre riprove ciascuno, un timeout per richiesta
@@ -535,13 +525,13 @@ def _openai_compat_report(
             continue
 
         text = _strip_fences(data["choices"][0]["message"]["content"] or "")
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
+        parsed = _parse_json_loose(text)
+        if parsed is None:
             if i < len(attempts) - 1:
                 log.info("Coach: risposta non JSON, riprovo con un vincolo piu' stretto")
                 continue
-            raise
+            log.error("Coach: risposta non interpretabile: %r", text[:200])
+            raise json.JSONDecodeError("nessun JSON nella risposta", text or "", 0)
         usage = data.get("usage") or {}
         log.info(
             "Coach: %s (%s) in=%s out=%s",
