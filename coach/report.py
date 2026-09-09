@@ -22,10 +22,15 @@ loss_zones: tratti dove sta perdendo tempo, ordinati per perdita. corners: curve
 in ingresso/apice/uscita contro il riferimento. metrics: overlap_pct = gas e freno insieme;
 coast_pct = ne' gas ne' freno; max_slip sopra 0.35 = aderenza persa. electronics: valori
 ATTUALI dal gioco col range legale. candidate_setup_changes: proposte gia' calcolate, da
-selezionare o scartare, non verita'.
+selezionare o scartare, non verita'. Sono gia' ordinate per misurabilita': quella con
+"azione_ora" e' l'unica da applicare adesso, quelle con "in_coda" vengono dopo.
 profilo: come guida SEMPRE, non com'e' andato oggi. "tratti" = vizi ricorrenti, ognuno con le
 curve dove succede, il tempo perso li' (correlazione, non causa), un "drill" gia' scritto e un
 "check". "consistenza_s" = distacco medio dal proprio miglior giro.
+storico: cosa hai gia' consigliato a QUESTO pilota e com'e' finita. "consigli_precedenti" ha lo
+stato applicato / non_applicato letto dall'elettronica del gioco, non dichiarato dal pilota.
+"esiti_misurati" = la metrica prima e dopo un cambio davvero applicato. "gia_detto" = i tuoi
+summary precedenti.
 
 REGOLE
 1. Ogni valore proposto deve stare nel range legale di electronics. Range ignoto = non proporlo.
@@ -41,6 +46,11 @@ REGOLE
    e' la causa, di' che l'assetto la nasconde e affianca il "drill" del profilo, senza inventarne.
 9. Se "consistenza_s" supera 1 secondo la priorita' non e' l'assetto: e' ripetere lo stesso giro.
 10. Ordina per tempo recuperabile. Se una loss_zone vale oltre il 40% del delta, nominala nel summary.
+11. Un consiglio in sospeso non si ripropone come nuovo: una riga per dire che e' ancora da fare.
+12. Se un cambio e' stato applicato, giudicalo con "esiti_misurati" PRIMA di proporne altri sullo
+    stesso parametro. Se ha peggiorato, torna indietro invece di insistere.
+13. Il summary non ripete una frase di "gia_detto". Se rispetto all'ultima volta non e' cambiato
+    niente di misurabile, dillo — e' un'informazione, non un fallimento.
 
 LUNGHEZZA — vincoli, non preferenze
 Massimo 3 voci in setup, 3 in trajectory, 3 in driving. Meglio 2 precise che 3 generiche.
@@ -149,13 +159,40 @@ REPORT_SCHEMA: dict[str, Any] = {
 # Fallback locale
 # --------------------------------------------------------------------------- #
 
-def _heuristic_report(analysis: dict[str, Any]) -> dict[str, Any]:
+def _heuristic_report(
+    analysis: dict[str, Any], storico: dict[str, Any] | None = None
+) -> dict[str, Any]:
     final = analysis.get("delta", {}).get("final_delta_ms", 0.0)
     sign = "+" if final >= 0 else ""
     summary = (
         f"Delta vs riferimento {sign}{final/1000:.3f}s. "
         "Priorita: applica le modifiche setup AC EVO, poi le curve dove perdi di piu."
     )
+    # Se una modifica precedente e' stata applicata, il suo esito viene prima
+    # di qualunque proposta nuova: e' l'unica cosa che si e' davvero misurata.
+    esiti = (storico or {}).get("esiti_misurati") or []
+    if esiti:
+        e = esiti[0]
+        summary = (
+            f"Delta {sign}{final/1000:.3f}s. {e['parametro']} {e['modifica']}: "
+            f"{e['metrica']} da {e['prima']} a {e['dopo']} ({e['giudizio']})."
+        )
+    elif (storico or {}).get("in_sospeso"):
+        # Una sola, la prima: elencarle tutte rimette in circolo la lista che
+        # non e' stata applicata, ed e' il modo di non farne applicare nessuna.
+        sospesi = storico["in_sospeso"]
+        coda = f" (poi {', '.join(sospesi[1:])})" if len(sospesi) > 1 else ""
+        summary = (
+            f"Delta {sign}{final/1000:.3f}s. Ancora da applicare: {sospesi[0]}{coda}. "
+            "Finche' resta com'e' non si misura niente."
+        )
+    else:
+        ora = next((t for t in analysis.get("setup", []) if t.get("azione_ora")), None)
+        if ora:
+            summary = (
+                f"Delta {sign}{final/1000:.3f}s. Una modifica alla volta, si parte da: "
+                f"{ora.get('title')}. Le altre restano in coda."
+            )
     setup = []
     for t in analysis.get("setup", [])[:6]:
         setup.append(
@@ -169,6 +206,12 @@ def _heuristic_report(analysis: dict[str, Any]) -> dict[str, Any]:
                 "current": t.get("current"),
                 "target": t.get("target"),
                 "action": t.get("action"),
+                "because": t.get("because"),
+                "from_profile": t.get("from_profile"),
+                "dallo_storico": t.get("dallo_storico"),
+                "in_sospeso": t.get("in_sospeso"),
+                "azione_ora": t.get("azione_ora"),
+                "in_coda": t.get("in_coda"),
             }
         )
     trajectory = [
@@ -321,6 +364,7 @@ def _compact_analysis(
     analysis: dict[str, Any],
     history: list[dict[str, Any]] | None = None,
     profile: dict[str, Any] | None = None,
+    storico: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     segments = analysis.get("delta", {}).get("segments", [])
     electronics = (analysis.get("meta", {}) or {}).get("electronics") or {}
@@ -340,6 +384,8 @@ def _compact_analysis(
         payload["previous_laps"] = history[:5]
     if profile and profile.get("ready"):
         payload["profilo"] = profile
+    if storico:
+        payload["storico"] = storico
     return payload
 
 
@@ -416,6 +462,7 @@ def _openai_compat_report(
     analysis: dict[str, Any],
     history: list[dict[str, Any]] | None,
     profile: dict[str, Any] | None = None,
+    storico: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = os.getenv("COACH_BASE_URL", "").strip().rstrip("/")
     api_key = os.getenv("COACH_API_KEY", "").strip()
@@ -427,7 +474,7 @@ def _openai_compat_report(
     if not model:
         raise ValueError("COACH_MODEL non impostato")
 
-    compact = _compact_analysis(analysis, history, profile)
+    compact = _compact_analysis(analysis, history, profile, storico)
     dati = json.dumps(compact, ensure_ascii=False, sort_keys=True)
 
     def messaggi(con_formato: bool) -> list[dict[str, str]]:
@@ -564,8 +611,12 @@ def _get_client(api_key: str):
     return _client
 
 
-def _fallback(analysis: dict[str, Any], warning: str | None = None) -> dict[str, Any]:
-    report = _heuristic_report(analysis)
+def _fallback(
+    analysis: dict[str, Any],
+    warning: str | None = None,
+    storico: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report = _heuristic_report(analysis, storico)
     report["source"] = "heuristic"
     if warning:
         report["warning"] = warning
@@ -578,24 +629,27 @@ def generate_coach_report(
     force_heuristic: bool = False,
     history: list[dict[str, Any]] | None = None,
     profile: dict[str, Any] | None = None,
+    storico: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Report di coaching. Usa Claude se c'e' una API key, altrimenti l'euristica locale.
 
     history: giri precedenti sulla stessa pista, cosi' il coach vede la progressione
     invece di ripartire da zero a ogni giro.
+    storico: i consigli gia' dati a questo pilota e cosa e' successo dopo, cosi' il
+    prossimo verifica invece di ripetere.
     profile: come guida abitualmente il pilota, per distinguere l'episodio dal vizio.
     """
     if force_heuristic:
-        return _heuristic_report(analysis)
+        return _heuristic_report(analysis, storico)
 
     # Backend generico (Google AI Studio, OpenRouter, Groq, Ollama...): se
     # COACH_BASE_URL e' configurato ha la precedenza su Anthropic.
     if os.getenv("COACH_BASE_URL", "").strip():
         try:
-            parsed = _openai_compat_report(analysis, history, profile)
+            parsed = _openai_compat_report(analysis, history, profile, storico)
             parsed["source"] = "openai_compat"
             parsed["model"] = os.getenv("COACH_MODEL", "")
-            local = _heuristic_report(analysis)
+            local = _heuristic_report(analysis, storico)
             for key in ("setup", "trajectory", "driving"):
                 parsed.setdefault(key, [])
             if not parsed.get("setup"):
@@ -611,17 +665,17 @@ def generate_coach_report(
             IndexError,
         ) as exc:
             log.warning("Coach: backend esterno non disponibile — %s", exc)
-            return _fallback(analysis, f"AI esterna non disponibile: {str(exc)[:140]}")
+            return _fallback(analysis, f"AI esterna non disponibile: {str(exc)[:140]}", storico)
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        return _heuristic_report(analysis)
+        return _heuristic_report(analysis, storico)
 
     import anthropic
 
     try:
         client = _get_client(api_key)
-        compact = _compact_analysis(analysis, history, profile)
+        compact = _compact_analysis(analysis, history, profile, storico)
 
         model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
         request: dict[str, Any] = {
@@ -653,11 +707,11 @@ def generate_coach_report(
         if message.stop_reason == "refusal":
             detail = getattr(message.stop_details, "explanation", None) or "nessun dettaglio"
             log.warning("Coach: richiesta rifiutata dal modello (%s)", detail)
-            return _fallback(analysis, "Il modello ha rifiutato la richiesta: uso analisi locale.")
+            return _fallback(analysis, "Il modello ha rifiutato la richiesta: uso analisi locale.", storico)
 
         if message.stop_reason == "max_tokens":
             log.warning("Coach: risposta troncata a max_tokens, alzare il limite")
-            return _fallback(analysis, "Risposta AI troncata: uso analisi locale.")
+            return _fallback(analysis, "Risposta AI troncata: uso analisi locale.", storico)
 
         log.info(
             "Coach: %s in=%d out=%d cache_read=%d",
@@ -681,25 +735,25 @@ def generate_coach_report(
         # L'euristica resta la rete di sicurezza sui setup: se il modello non ha
         # prodotto istruzioni operative, si usano quelle calcolate localmente.
         if not parsed.get("setup"):
-            parsed["setup"] = _heuristic_report(analysis)["setup"]
+            parsed["setup"] = _heuristic_report(analysis, storico)["setup"]
         return parsed
 
     except anthropic.AuthenticationError:
         log.error("Coach: ANTHROPIC_API_KEY non valida")
-        return _fallback(analysis, "API key Anthropic non valida: uso analisi locale.")
+        return _fallback(analysis, "API key Anthropic non valida: uso analisi locale.", storico)
     except anthropic.RateLimitError:
         log.warning("Coach: rate limit Anthropic")
-        return _fallback(analysis, "Limite di richieste raggiunto: uso analisi locale.")
+        return _fallback(analysis, "Limite di richieste raggiunto: uso analisi locale.", storico)
     except anthropic.BadRequestError as exc:
         # Tipicamente: parametro non supportato dal modello configurato.
         log.error("Coach: richiesta rifiutata dall'API — %s", exc.message)
-        return _fallback(analysis, f"Richiesta AI non valida: {exc.message[:120]}")
+        return _fallback(analysis, f"Richiesta AI non valida: {exc.message[:120]}", storico)
     except anthropic.APIConnectionError:
         log.warning("Coach: nessuna connessione all'API Anthropic")
-        return _fallback(analysis, "Nessuna connessione all'AI: uso analisi locale.")
+        return _fallback(analysis, "Nessuna connessione all'AI: uso analisi locale.", storico)
     except anthropic.APIStatusError as exc:
         log.error("Coach: errore API %s", exc.status_code)
-        return _fallback(analysis, f"Errore AI ({exc.status_code}): uso analisi locale.")
+        return _fallback(analysis, f"Errore AI ({exc.status_code}): uso analisi locale.", storico)
     except (json.JSONDecodeError, StopIteration, KeyError, ValueError) as exc:
         log.exception("Coach: risposta AI non interpretabile")
-        return _fallback(analysis, f"Risposta AI non valida ({type(exc).__name__}): uso analisi locale.")
+        return _fallback(analysis, f"Risposta AI non valida ({type(exc).__name__}): uso analisi locale.", storico)

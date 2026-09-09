@@ -40,19 +40,29 @@ class SessionJournal:
         self._started: float | None = None
         self._counts: dict[str, int] = {}
 
-    def start(self, track: str | None, car: str | None, **extra: Any) -> None:
+    def start(
+        self,
+        track: str | None,
+        car: str | None,
+        driver: str | None = None,
+        **extra: Any,
+    ) -> None:
+        """Apre un diario nuovo. Il pilota entra nel nome del file: due persone
+        sulla stessa macchina lasciano due tracce separate, leggibili senza
+        aprire i file per capire di chi sono."""
         self.close()
         self._started = time.time()
         self._counts = {}
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self._started))
+        coda = f"-{_slug(driver)}" if driver else ""
         try:
             sessions_dir().mkdir(parents=True, exist_ok=True)
-            self.path = sessions_dir() / f"{stamp}-{_slug(track)}.jsonl"
+            self.path = sessions_dir() / f"{stamp}-{_slug(track)}{coda}.jsonl"
         except OSError as exc:
             log.warning("Diario non apribile: %s", exc)
             self.path = None
             return
-        self.event("session_start", track=track, car=car, **extra)
+        self.event("session_start", track=track, car=car, pilota=driver, **extra)
 
     def event(self, kind: str, **data: Any) -> None:
         self._counts[kind] = self._counts.get(kind, 0) + 1

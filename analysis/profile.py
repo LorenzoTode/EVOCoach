@@ -302,6 +302,18 @@ def attach_cost(profile: dict[str, Any], corners: list[dict[str, Any]]) -> dict[
     return {**profile, "tratti": tratti}
 
 
+def _prima_frase(testo: str) -> str:
+    """Prima frase di una spiegazione, senza tagliare sui decimali.
+
+    Spezzare sul punto e basta trasforma "picco di frenata a 0.99" in
+    "picco di frenata a 0": il numero e' la parte che rende il consiglio
+    verificabile, ed e' proprio quella che andrebbe persa.
+    """
+    testo = (testo or "").strip()
+    taglio = testo.find(". ")
+    return (testo[:taglio] if taglio > 0 else testo.rstrip(".")).strip()
+
+
 def _electronic(electronics: dict[str, Any], key: str) -> tuple[float | None, float | None, float | None]:
     """Valore attuale e range legale di un parametro, come li pubblica il gioco."""
     value = electronics.get(f"electronics_{key}")
@@ -338,7 +350,13 @@ def setup_from_profile(
         current, lo, hi = _electronic(electronics, hint["key"])
         if current is None:
             continue
-        target = current + hint["step"]
+        passo = hint["step"]
+        # Il gioco puo' pubblicare la ripartizione come frazione (0.545) o come
+        # percentuale (54.5). Mezzo punto e' mezzo punto in entrambi i casi, ma
+        # sottrarre 0.5 a una frazione la azzererebbe: lo step segue la scala.
+        if hint["key"] == "brake_bias" and abs(current) <= 1.5:
+            passo = passo / 100.0
+        target = current + passo
         if lo is not None:
             target = max(lo, target)
         if hi is not None:
@@ -346,9 +364,11 @@ def setup_from_profile(
         if abs(target - current) < 1e-6:
             continue   # gia' al limite: proporlo sarebbe un consiglio finto
 
-        fmt = (lambda v: f"{v:.1f}") if isinstance(hint["step"], float) else (lambda v: f"{v:.0f}")
+        decimali = 3 if (hint["key"] == "brake_bias" and abs(current) <= 1.5) else (
+            1 if isinstance(hint["step"], float) else 0)
+        fmt = lambda v, d=decimali: f"{v:.{d}f}"
         detail = (
-            f"Nasce dal profilo: {trait['title'].lower()} — {trait['detail'].split('.')[0].lower()}. "
+            f"Nasce dal profilo: {trait['title'].lower()} — {_prima_frase(trait['detail']).lower()}. "
             f"Portare {hint['parameter']} a {fmt(target)} da' {hint['effect']}."
         )
         if hint.get("caveat"):
@@ -364,10 +384,71 @@ def setup_from_profile(
                 "target": fmt(target),
                 "action": f"Porta {hint['parameter']} da {fmt(current)} a {fmt(target)}",
                 "detail": detail,
-                "because": trait["detail"].split(".")[0] + ".",
+                "because": _prima_frase(trait["detail"]) + ".",
                 "from_profile": True,
                 "trait": trait["metric"],
                 "corners": [c["name"] for c in trait.get("corners", [])],
             }
         )
     return out
+
+
+def compare_profiles(
+    a: dict[str, Any], b: dict[str, Any], *, nome_a: str = "A", nome_b: str = "B"
+) -> dict[str, Any]:
+    """Due profili affiancati: dove i due piloti guidano davvero diversamente.
+
+    Non serve a dire chi e' piu' bravo — il tempo sul giro lo dice gia'. Serve
+    a vedere se il coach reagisce a due stili diversi in modo diverso: se le
+    abitudini divergono e i consigli no, il modello non sta guardando i dati.
+    """
+    etichette = {
+        "overlap_pct": ("Gas e freno insieme", "%"),
+        "coast_pct": ("Tempo in rilascio", "%"),
+        "trail_brake_pct": ("Freno in curva", "%"),
+        "early_throttle_pct": ("Gas anticipato", "%"),
+        "brake_peak": ("Picco di frenata", ""),
+        "max_slip": ("Slip massimo", ""),
+        "avg_slip": ("Slip medio", ""),
+        "brake_time_pct": ("Tempo sul freno", "%"),
+    }
+    ab, bb = a.get("abitudini") or {}, b.get("abitudini") or {}
+    abitudini = []
+    for chiave, (etichetta, unita) in etichette.items():
+        va, vb = ab.get(chiave), bb.get(chiave)
+        if va is None and vb is None:
+            continue
+        abitudini.append(
+            {
+                "metrica": chiave,
+                "etichetta": etichetta,
+                "unita": unita,
+                "a": va,
+                "b": vb,
+                "differenza": None if va is None or vb is None else round(float(vb) - float(va), 3),
+            }
+        )
+    # Ordinate per quanto i due divergono in proporzione: le prime righe sono
+    # le differenze di stile vere, non il rumore su una metrica gia' simile.
+    def divergenza(riga: dict[str, Any]) -> float:
+        va, vb = riga["a"], riga["b"]
+        if va is None or vb is None:
+            return -1.0
+        scala = max(abs(float(va)), abs(float(vb)), 1e-6)
+        return abs(float(vb) - float(va)) / scala
+
+    abitudini.sort(key=divergenza, reverse=True)
+
+    tratti_a = {t["metric"]: t for t in a.get("tratti", [])}
+    tratti_b = {t["metric"]: t for t in b.get("tratti", [])}
+    return {
+        "pronti": bool(a.get("ready") and b.get("ready")),
+        "piloti": {"a": nome_a, "b": nome_b},
+        "giri": {"a": a.get("laps", 0), "b": b.get("laps", 0)},
+        "miglior_giro_ms": {"a": a.get("best_ms"), "b": b.get("best_ms")},
+        "consistenza_s": {"a": a.get("consistenza_s"), "b": b.get("consistenza_s")},
+        "abitudini": abitudini,
+        "solo_a": [tratti_a[k]["title"] for k in tratti_a.keys() - tratti_b.keys()],
+        "solo_b": [tratti_b[k]["title"] for k in tratti_b.keys() - tratti_a.keys()],
+        "in_comune": [tratti_a[k]["title"] for k in tratti_a.keys() & tratti_b.keys()],
+    }

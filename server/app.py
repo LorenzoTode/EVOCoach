@@ -22,15 +22,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from analysis.delta import build_analysis_payload
+from analysis.history import build_history_block, filter_repeats
 from analysis.profile import (
     attach_cost,
     build_driver_profile,
+    compare_profiles,
     lap_metrics,
     setup_from_profile,
 )
 from analysis.setup_acevo import build_acevo_setup_instructions
 from coach.report import generate_coach_report
 from storage.db import Database
+from storage.drivers import DriverRegistry
 from storage.diagnostics import app_version, install_id, setup_logging, tail_log
 from storage.journal import SessionJournal
 from storage.paths import app_dir, bundle_dir
@@ -258,6 +261,7 @@ class LiveHub:
         self._last_lap_no: int | None = None
         self._session_id: int | None = None
         self.db = Database()
+        self.drivers = DriverRegistry()
         self.track_map = TrackMapBuilder()
         self._last_electronics: dict[str, Any] = {}
         self._last_physics_setup: dict[str, Any] = {}
@@ -289,6 +293,42 @@ class LiveHub:
         # Un'analisi in attesa di un momento sicuro per girare.
         self._pending_lap: int | None = None
         self._last_analysis_at = 0.0
+
+    @property
+    def driver(self) -> str:
+        """Chi sta guidando adesso. Tutto cio' che si archivia porta questa firma."""
+        return self.drivers.active
+
+    def switch_driver(self, driver_id: str) -> bool:
+        """Passa il volante all'altro pilota.
+
+        Il giro in corso non appartiene a nessuno dei due — meta' l'ha guidato
+        uno, meta' l'altro — quindi si butta. I conteggi ripartono, la sessione
+        nel database e il diario si aprono nuovi, e il report a schermo resta
+        di chi l'ha ricevuto: e' il client a toglierlo quando vede il cambio.
+        La mappa del tracciato invece resta: e' geometria del circuito, non
+        roba di chi guida.
+        """
+        precedente = self.drivers.name()
+        if not self.drivers.switch(driver_id):
+            return False
+        self.journal.event("driver_change", da=precedente, a=self.drivers.name())
+        self._lap_samples = []
+        self._lap_valid, self._lap_had_pit = True, False
+        self._valid_laps = self._invalid_laps = 0
+        self._last_lap_no = None
+        self._last_saved = None
+        self._session_id = None
+        self._pending_lap = None
+        with self._report_lock:
+            self._report = None
+        self.journal.start(
+            self._track, self.latest.get("car"), self.drivers.name(),
+            versione=app_version(), installazione=install_id(), modo=self.mode,
+            cambio_pilota_da=precedente,
+        )
+        log.info("Pilota al volante: %s", self.drivers.name())
+        return True
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -401,10 +441,15 @@ class LiveHub:
         frame["session"] = self.session_state(frame)
         return frame
 
-    def driver_profile(self, track: str | None = None) -> dict[str, Any]:
-        """Profilo costruito sui giri validi gia' in archivio, dal piu' recente."""
+    def driver_profile(self, track: str | None = None, driver: str | None = None) -> dict[str, Any]:
+        """Profilo costruito sui giri validi gia' in archivio, dal piu' recente.
+
+        Sempre di un pilota solo: mescolare due persone produce la mediana di
+        nessuno, e un'abitudine che non ha ne' l'uno ne' l'altro.
+        """
+        chi = driver or self.driver
         laps: list[dict[str, Any]] = []
-        for row in self.db.list_laps(track=track, limit=60):
+        for row in self.db.list_laps(track=track, limit=60, driver=chi):
             if not row.get("valid"):
                 continue
             full = self.db.get_lap(row["id"]) or {}
@@ -415,6 +460,8 @@ class LiveHub:
             laps.append({"lap_time_ms": row.get("lap_time_ms"), "metrics": meta.get("metrics") or {}})
         profile = build_driver_profile(laps)
         profile["track"] = track
+        profile["driver"] = chi
+        profile["driver_nome"] = self.drivers.name(chi)
         return profile
 
     def _analysis_policy(self) -> str:
@@ -526,6 +573,9 @@ class LiveHub:
             state = "waiting_lap"
         return {
             "state": state,
+            # Chi guida: il client azzera l'analisi quando cambia, come fa
+            # col cambio pista — parla di un'altra persona.
+            "driver": {"id": self.driver, "nome": self.drivers.name()},
             "track": frame.get("track"),
             "car": frame.get("car"),
             "lap": frame.get("lap"),
@@ -549,7 +599,8 @@ class LiveHub:
             ripreso = self.track_map.load(self._tracks_dir, track)
             self.journal.event("track_change", da=precedente, a=track)
             self.journal.start(
-                track, None, versione=app_version(), installazione=install_id(),
+                track, None, self.drivers.name(),
+                versione=app_version(), installazione=install_id(),
                 tracciato_ripreso=ripreso, modo=self.mode, da_pista=precedente,
             )
         self._valid_laps = 0
@@ -591,7 +642,9 @@ class LiveHub:
         valid = not reasons
 
         if self._session_id is None:
-            self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
+            self._session_id = self.db.create_session(
+                frame.get("track"), frame.get("car"), driver=self.driver
+            )
 
         # Calcolate una volta, mentre i campioni sono in mano: servono sia al
         # record del giro sia al diario.
@@ -611,6 +664,7 @@ class LiveHub:
                 "invalid_reasons": reasons,
                 "metrics": metrics,
             },
+            driver=self.driver,
         )
         if valid:
             self._valid_laps += 1
@@ -657,7 +711,7 @@ class LiveHub:
             if ripreso:
                 log.info("Tracciato di %s ripreso dalle sessioni precedenti", track)
             self.journal.start(
-                track, frame.get("car"),
+                track, frame.get("car"), self.drivers.name(),
                 versione=app_version(), installazione=install_id(),
                 tracciato_ripreso=ripreso, modo=self.mode,
             )
@@ -680,7 +734,9 @@ class LiveHub:
             "slip_rr": (frame.get("slip") or [None] * 4)[3],
         }
         if self._session_id is None:
-            self._session_id = self.db.create_session(frame.get("track"), frame.get("car"))
+            self._session_id = self.db.create_session(
+                frame.get("track"), frame.get("car"), driver=self.driver
+            )
 
         npos = frame.get("npos")
         if npos is not None:
@@ -780,10 +836,19 @@ def demo_bundle() -> dict[str, Any]:
 
 
 @app.get("/api/laps")
-def list_laps(track: str | None = None, include_invalid: bool = False) -> list[dict[str, Any]]:
-    """Giri salvati. Di default solo quelli validi: un giro con track limits
-    o penalita' non e' un riferimento e non e' analizzabile con senso."""
-    laps = hub.db.list_laps(track=track)
+def list_laps(
+    track: str | None = None,
+    include_invalid: bool = False,
+    driver: str | None = None,
+    tutti: bool = False,
+) -> list[dict[str, Any]]:
+    """Giri salvati. Di default solo quelli validi e solo del pilota al volante:
+    un giro con track limits non e' un riferimento, e il giro di un'altra
+    persona non e' un termine di paragone per il proprio profilo.
+
+    tutti=true toglie il filtro sul pilota, per confrontare i due archivi.
+    """
+    laps = hub.db.list_laps(track=track, driver=None if tutti else (driver or hub.driver))
     if include_invalid:
         return laps
     return [lap for lap in laps if lap.get("valid")]
@@ -795,8 +860,69 @@ def session() -> dict[str, Any]:
 
 
 @app.get("/api/profile")
-def driver_profile(track: str | None = None) -> dict[str, Any]:
-    return hub.driver_profile(track or hub._track)
+def driver_profile(track: str | None = None, driver: str | None = None) -> dict[str, Any]:
+    return hub.driver_profile(track or hub._track, driver)
+
+
+# --------------------------------------------------------------------------- #
+# Piloti: due persone, stessa macchina, due archivi separati.
+# --------------------------------------------------------------------------- #
+
+class DriverSwitch(BaseModel):
+    id: str
+
+
+class DriverRename(BaseModel):
+    id: str
+    nome: str
+
+
+@app.get("/api/drivers")
+def drivers() -> dict[str, Any]:
+    return {"attivo": hub.driver, "piloti": hub.drivers.list()}
+
+
+@app.post("/api/drivers/active")
+def set_driver(req: DriverSwitch) -> dict[str, Any]:
+    """Passa il volante. Da qui in poi ogni giro registrato e' del nuovo pilota."""
+    cambiato = hub.switch_driver(req.id)
+    if not cambiato and not hub.drivers.exists(req.id):
+        return {"ok": False, "error": "pilota_sconosciuto", "attivo": hub.driver}
+    return {"ok": True, "cambiato": cambiato, "attivo": hub.driver,
+            "piloti": hub.drivers.list()}
+
+
+@app.post("/api/drivers/rename")
+def rename_driver(req: DriverRename) -> dict[str, Any]:
+    ok = hub.drivers.rename(req.id, req.nome)
+    return {"ok": ok, "piloti": hub.drivers.list()}
+
+
+@app.get("/api/drivers/compare")
+def compare_drivers(track: str | None = None, a: str | None = None, b: str | None = None) -> dict[str, Any]:
+    """I due profili affiancati sulla stessa pista.
+
+    Serve a rispondere a una domanda precisa: davanti a due stili diversi il
+    coach dice cose diverse? Se le abitudini divergono e i consigli no, il
+    modello non sta leggendo i dati.
+    """
+    ids = hub.drivers.ids()
+    id_a = a or (ids[0] if ids else hub.driver)
+    id_b = b or next((i for i in ids if i != id_a), id_a)
+    pista = track or hub._track
+    profilo_a = hub.driver_profile(pista, id_a)
+    profilo_b = hub.driver_profile(pista, id_b)
+    confronto = compare_profiles(
+        profilo_a, profilo_b, nome_a=hub.drivers.name(id_a), nome_b=hub.drivers.name(id_b)
+    )
+    return {
+        "track": pista,
+        "a": {"id": id_a, "nome": hub.drivers.name(id_a), "profilo": profilo_a,
+              "ultimi_consigli": hub.db.list_advice(id_a, pista, limit=3)},
+        "b": {"id": id_b, "nome": hub.drivers.name(id_b), "profilo": profilo_b,
+              "ultimi_consigli": hub.db.list_advice(id_b, pista, limit=3)},
+        "confronto": confronto,
+    }
 
 
 def _build_export(include_log: bool = True) -> dict[str, Any]:
@@ -807,7 +933,7 @@ def _build_export(include_log: bool = True) -> dict[str, Any]:
     il profilo — cioe' cio' che si confronta fra piloti diversi.
     """
     laps = []
-    for row in hub.db.list_laps(limit=200, track=None):
+    for row in hub.db.list_laps(limit=200, track=None, driver=None):
         full = hub.db.get_lap(row["id"]) or {}
         try:
             meta = json.loads(full.get("meta_json") or "{}")
@@ -821,6 +947,7 @@ def _build_export(include_log: bool = True) -> dict[str, Any]:
                 "track": row.get("track"),
                 "car": row.get("car"),
                 "at": row.get("created_at"),
+                "driver": row.get("driver"),
                 "invalid_reasons": meta.get("invalid_reasons") or [],
                 "metrics": meta.get("metrics") or {},
                 "electronics": meta.get("electronics") or {},
@@ -849,7 +976,17 @@ def _build_export(include_log: bool = True) -> dict[str, Any]:
             "punti": len((hub.latest.get("map") or {}).get("path") or []),
         },
         "piste": tracks,
-        "profili": {t: hub.driver_profile(t) for t in tracks},
+        # Un profilo per pilota per pista: unirli darebbe la media di due
+        # persone diverse, che non descrive nessuna delle due.
+        "piloti": hub.drivers.list(),
+        "profili": {
+            f"{chi}/{t}": hub.driver_profile(t, chi)
+            for chi in hub.drivers.ids()
+            for t in tracks
+        },
+        "consigli_dati": {
+            chi: hub.db.list_advice(chi, None, limit=20) for chi in hub.drivers.ids()
+        },
         "giri": laps,
         "log": tail_log() if include_log else [],
         # La sessione intera, evento per evento: il log a rotazione tiene le
@@ -891,6 +1028,7 @@ def debug_telemetry() -> dict[str, Any]:
         },
         "app": {
             "mode": hub.mode,
+            "pilota": {"id": hub.driver, "nome": hub.drivers.name()},
             "track": hub._track,
             "giro_corrente_valido": hub._lap_valid,
             "giro_passato_dai_box": hub._lap_had_pit,
@@ -903,7 +1041,11 @@ def debug_telemetry() -> dict[str, Any]:
             "npos_percorso": [hub._npos_lo, hub._npos_hi],
         },
         "ultimo_giro_archiviato": hub._last_saved,
-        "giri_nel_database": hub.db.list_laps(limit=10),
+        "giri_nel_database": hub.db.list_laps(limit=10, driver=hub.driver),
+        "giri_altro_pilota": {
+            hub.drivers.name(c): len(hub.db.list_laps(limit=200, driver=c))
+            for c in hub.drivers.ids()
+        },
     }
 
 
@@ -998,7 +1140,11 @@ def _run_analysis(
     quando l'analisi parte da sola a fine giro.
     """
     if lap_id is None:
-        recenti = [r for r in hub.db.list_laps(track=hub._track, limit=5) if r.get("valid")]
+        recenti = [
+            r
+            for r in hub.db.list_laps(track=hub._track, limit=5, driver=hub.driver)
+            if r.get("valid")
+        ]
         if not recenti:
             return {"error": "no_valid_lap"}
         lap_id = recenti[0]["id"]
@@ -1009,9 +1155,13 @@ def _run_analysis(
     if not lap:
         return {"error": "lap_not_found"}
     current = hub.db.get_samples(req.lap_id)
+    # Il pilota e' quello del giro, non quello al volante adesso: se il volante
+    # passa mentre un'analisi e' in coda, il report deve restare di chi l'ha
+    # guidato — riferimento, profilo e storico compresi.
+    chi = lap.get("driver") or hub.driver
     ref_id = req.reference_lap_id
     if ref_id is None:
-        best = hub.db.best_lap(lap.get("track"))
+        best = hub.db.best_lap(lap.get("track"), chi)
         ref_id = best["id"] if best else None
     if ref_id == req.lap_id:
         # Il giro piu' veloce della pista e' proprio quello analizzato: confrontarlo
@@ -1021,7 +1171,7 @@ def _run_analysis(
         # vero — e il delta che ne esce e' privo di senso.
         others = [
             r
-            for r in hub.db.list_laps(track=lap.get("track"))
+            for r in hub.db.list_laps(track=lap.get("track"), driver=chi)
             if r["id"] != req.lap_id and r.get("lap_time_ms") and r.get("valid")
         ]
         ref_id = min(others, key=lambda r: r["lap_time_ms"])["id"] if others else None
@@ -1058,15 +1208,55 @@ def _run_analysis(
             "lap_time_ms": r.get("lap_time_ms"),
             "valid": bool(r.get("valid")),
         }
-        for r in hub.db.list_laps(track=track, limit=6)
+        for r in hub.db.list_laps(track=track, limit=6, driver=chi)
         if r.get("id") != req.lap_id and r.get("lap_time_ms")
     ]
-    profile = attach_cost(hub.driver_profile(track), analysis.get("corners", []))
+    profile = attach_cost(hub.driver_profile(track, chi), analysis.get("corners", []))
     # Le modifiche che nascono da un'abitudine vengono prima di quelle dedotte
     # dal singolo giro: hanno dietro piu' giri e una motivazione verificabile.
     analysis["setup"] = setup_from_profile(profile, electronics) + analysis.get("setup", [])
+
+    # Cosa era gia' stato consigliato a questo pilota, e cosa e' successo dopo.
+    # Il filtro toglie dalle proposte quello che e' gia' stato detto e non e'
+    # stato fatto: senza, a ogni giro riparte la stessa lista, identica, e
+    # dopo tre volte nessuno la legge piu'.
+    storico = build_history_block(
+        hub.db.list_advice(chi, track, limit=4),
+        electronics,
+        analysis.get("metrics", {}),
+        lap_time_ms=lap.get("lap_time_ms"),
+    )
+    analysis["setup"] = filter_repeats(analysis["setup"], storico)
     report = generate_coach_report(
-        analysis, force_heuristic=req.force_heuristic, history=history, profile=profile
+        analysis,
+        force_heuristic=req.force_heuristic,
+        history=history,
+        profile=profile,
+        storico=storico,
+    )
+    # Archiviato PRIMA di tornare: il prossimo giro deve poter dire "questo
+    # te l'avevo detto", e per farlo deve trovarlo scritto.
+    hub.db.save_advice(
+        driver=chi,
+        track=track,
+        lap_id=req.lap_id,
+        lap_time_ms=lap.get("lap_time_ms"),
+        delta_ms=analysis["delta"].get("final_delta_ms"),
+        source=report.get("source"),
+        summary=report.get("summary"),
+        setup=[
+            {
+                "parameter": t.get("parameter"),
+                "current": t.get("current"),
+                "target": t.get("target"),
+                "because": t.get("because"),
+                "title": t.get("title"),
+            }
+            for t in report.get("setup", [])
+            if t.get("parameter")
+        ],
+        metrics=analysis.get("metrics", {}),
+        electronics=electronics,
     )
     hub.journal.event(
         "coach",
@@ -1080,10 +1270,13 @@ def _run_analysis(
         metriche=analysis.get("metrics", {}),
         profilo_pronto=bool(profile.get("ready")),
         tratti=[t["metric"] for t in profile.get("tratti", [])],
+        pilota=chi,
         sorgente=report.get("source"),
         warning=report.get("warning"),
         summary=report.get("summary"),
         driver_note=report.get("driver_note"),
+        storico_in_sospeso=storico.get("in_sospeso") if storico else [],
+        storico_esiti=storico.get("esiti_misurati") if storico else [],
         setup=[
             {"parametro": t.get("parameter"), "da": t.get("current"),
              "a": t.get("target"), "perche": t.get("because")}
@@ -1105,6 +1298,7 @@ def _run_analysis(
         "current": current,
         "meta": analysis["meta"],
         "profile": profile,
+        "storico": storico,
     }
 
 
