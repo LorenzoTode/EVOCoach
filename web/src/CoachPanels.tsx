@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { DriverProfile, DriverTrait, Tip } from "./types";
+import { DriverCompare } from "./DriverCompare";
+import type { DriverProfile, DriverTrait, Storico, Tip } from "./types";
 
 function sourceLabel(source: string) {
   if (source === "anthropic") return "AI Anthropic";
@@ -20,11 +21,21 @@ function TipList({ tips, setupMode = false }: { tips: Tip[]; setupMode?: boolean
   return (
     <ul className="tip-list">
       {tips.map((t, i) => (
-        <li key={`${t.title}-${i}`} className={severityClass(t.severity)}>
+        <li
+          key={`${t.title}-${i}`}
+          className={`${severityClass(t.severity)}${t.in_coda ? " queued" : ""}`}
+        >
           <div className="tip-head">
             <strong>{t.title}</strong>
             {t.corner ? <em>{t.corner}</em> : null}
             {!setupMode && t.area ? <em>{t.area}</em> : null}
+            {setupMode && t.azione_ora ? <b className="tag now">Fai questa</b> : null}
+            {setupMode && t.in_coda ? <b className="tag queued">In coda</b> : null}
+            {t.in_sospeso ? (
+              <b className="tag pending">
+                {t.volte && t.volte > 1 ? `già detta ${t.volte} volte` : "già detta"}
+              </b>
+            ) : null}
           </div>
           {setupMode && (t.menu || t.action) ? (
             <div className="setup-card">
@@ -64,9 +75,11 @@ type Props = {
   source?: string;
   warning?: string;
   metrics?: Record<string, number>;
+  storico?: Storico;
+  track?: string | null;
 };
 
-type TabId = "setup" | "guida" | "profilo";
+type TabId = "setup" | "guida" | "profilo" | "confronto";
 
 function TraitCard({ trait }: { trait: DriverTrait }) {
   const trend = trait.trend;
@@ -105,6 +118,40 @@ function TraitCard({ trait }: { trait: DriverTrait }) {
         </div>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * Cos'e' successo all'ultima modifica applicata.
+ *
+ * E' la riga che trasforma un consiglio in una verifica: senza, ogni giro
+ * ricomincia da capo e il pilota non sa se quello che ha cambiato serviva.
+ */
+function StoricoStrip({ storico }: { storico?: Storico }) {
+  if (!storico) return null;
+  const esito = storico.esiti_misurati?.[0];
+  const sospesi = storico.in_sospeso ?? [];
+  if (!esito && !sospesi.length) return null;
+
+  return (
+    <div className="storico-strip">
+      {esito ? (
+        <p className={`storico-esito ${esito.giudizio}`}>
+          <span>
+            {esito.parametro} {esito.modifica}
+          </span>
+          {esito.metrica} da {esito.prima ?? "—"} a {esito.dopo ?? "—"} ·{" "}
+          <b>{esito.giudizio}</b>
+          <em>correlazione, non prova: nello stesso giro è cambiato anche come guidavi</em>
+        </p>
+      ) : null}
+      {sospesi.length ? (
+        <p className="storico-sospesi">
+          Ancora da applicare: <b>{sospesi[0]}</b>
+          {sospesi.length > 1 ? <span> — poi {sospesi.slice(1).join(", ")}</span> : null}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -193,6 +240,8 @@ export function CoachPanels({
   source,
   warning,
   metrics,
+  storico,
+  track,
 }: Props) {
   const [tab, setTab] = useState<TabId>("setup");
 
@@ -200,6 +249,7 @@ export function CoachPanels({
     { id: "setup", label: "Setup", count: setup.length },
     { id: "guida", label: "Guida & linee", count: trajectory.length + driving.length },
     { id: "profilo", label: "Profilo", count: profile?.tratti?.length },
+    { id: "confronto", label: "Confronto" },
   ];
 
   return (
@@ -254,8 +304,9 @@ export function CoachPanels({
           <section className="panel">
             <div className="panel-title">
               <h3>Setup AC EVO</h3>
-              <span>menu → valore attuale → target</span>
+              <span>una modifica alla volta</span>
             </div>
+            <StoricoStrip storico={storico} />
             <TipList tips={setup} setupMode />
           </section>
         ) : null}
@@ -282,10 +333,20 @@ export function CoachPanels({
         {tab === "profilo" ? (
           <section className="panel">
             <div className="panel-title">
-              <h3>Come guidi</h3>
+              <h3>Come guida {profile?.driver_nome ?? "il pilota"}</h3>
               <span>mediana degli ultimi giri validi</span>
             </div>
             <ProfilePanel profile={profile} note={driverNote} />
+          </section>
+        ) : null}
+
+        {tab === "confronto" ? (
+          <section className="panel">
+            <div className="panel-title">
+              <h3>I due piloti</h3>
+              <span>stesso gioco, stili diversi</span>
+            </div>
+            <DriverCompare track={track} />
           </section>
         ) : null}
       </div>

@@ -38,6 +38,80 @@ export type Tip = {
   /** Da cosa nasce la modifica: l'abitudine o il dato che l'ha motivata. */
   because?: string;
   from_profile?: boolean;
+  /** Nasce dal confronto con quello che era gia' stato consigliato. */
+  dallo_storico?: boolean;
+  /** Consigliata prima e non ancora applicata. */
+  in_sospeso?: boolean;
+  /** Quante volte e' stata proposta senza essere applicata. */
+  volte?: number;
+  /** L'unica da applicare adesso: cambiarne piu' di una rende il giro dopo illeggibile. */
+  azione_ora?: boolean;
+  in_coda?: boolean;
+  altri_in_sospeso?: string[];
+  esito?: AdviceOutcome;
+};
+
+export type Driver = { id: string; nome: string; attivo?: boolean };
+
+/** Cos'e' successo a una modifica applicata davvero: la metrica prima e dopo. */
+export type AdviceOutcome = {
+  parametro: string;
+  modifica: string;
+  metrica: string;
+  prima?: number | null;
+  dopo?: number | null;
+  variazione?: number | null;
+  giudizio: "migliorato" | "peggiorato" | "invariato" | "non_misurabile";
+  nota?: string;
+};
+
+/** Cosa il coach aveva gia' detto a questo pilota, e com'e' finita. */
+export type Storico = {
+  report_precedenti?: number;
+  consigli_precedenti?: Array<{
+    parametro: string;
+    volte: number;
+    da?: string | number;
+    a?: string | number;
+    /** applicato · non_applicato · cambiato_altrimenti · sconosciuto — letto dal gioco. */
+    stato: string;
+    valore_ora?: number | null;
+    perche?: string;
+  }>;
+  esiti_misurati?: AdviceOutcome[];
+  in_sospeso?: string[];
+  gia_detto?: string[];
+  tempo?: {
+    quando_consigliato_ms?: number | null;
+    adesso_ms?: number | null;
+    differenza_ms?: number | null;
+  };
+};
+
+export type HabitRow = {
+  metrica: string;
+  etichetta: string;
+  unita: string;
+  a: number | null;
+  b: number | null;
+  differenza: number | null;
+};
+
+export type DriverComparison = {
+  track?: string | null;
+  a: { id: string; nome: string; profilo: DriverProfile };
+  b: { id: string; nome: string; profilo: DriverProfile };
+  confronto: {
+    pronti: boolean;
+    piloti: { a: string; b: string };
+    giri: { a: number; b: number };
+    miglior_giro_ms: { a?: number | null; b?: number | null };
+    consistenza_s: { a?: number | null; b?: number | null };
+    abitudini: HabitRow[];
+    solo_a: string[];
+    solo_b: string[];
+    in_comune: string[];
+  };
 };
 
 export type SessionState = {
@@ -50,6 +124,8 @@ export type SessionState = {
   valid_laps: number;
   invalid_laps: number;
   current_lap_valid: boolean;
+  /** Chi e' al volante: quando cambia, l'analisi a schermo e' di un'altra persona. */
+  driver?: Driver;
   best_ms?: number | null;
   /** Il server dice quando c'e' un report nuovo da ritirare. */
   analysis?: {
@@ -106,6 +182,8 @@ export type DriverProfile = {
   abitudini?: Record<string, number>;
   tratti?: DriverTrait[];
   track?: string | null;
+  driver?: string;
+  driver_nome?: string;
 };
 
 export type CoachReport = {
@@ -175,6 +253,7 @@ export type AnalyzeResponse = {
   meta: Record<string, unknown>;
   electronics?: Record<string, number | null>;
   profile?: DriverProfile;
+  storico?: Storico;
 };
 
 export function formatMs(ms?: number | null): string {

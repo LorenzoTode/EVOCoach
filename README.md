@@ -47,6 +47,40 @@ python -m venv .venv
 Il frontend è già compilato in `web/dist` e versionato: Node non serve, a meno
 di voler modificare l'interfaccia (`cd web && npm install && npm run build`).
 
+## Due piloti sulla stessa macchina
+
+In alto a sinistra ci sono due profili. Chi guida si sceglie con un click: da
+quel momento i giri, il profilo di guida, il riferimento per il delta e i
+consigli sono suoi e solo suoi. Il nome si cambia con un doppio click.
+
+Serve perché un archivio solo, per due persone, produce la mediana di due stili
+diversi — cioè un pilota che non esiste, con abitudini che non ha nessuno dei
+due. Il secondo profilo parte vuoto e si costruisce il suo storico da zero.
+
+La scheda **Confronto** mette i due profili affiancati: chi sovrappone i pedali,
+chi resta in rilascio, chi manda le gomme oltre aderenza. Non serve a dire chi
+va più forte — quello lo dice il tempo sul giro — ma a vedere se davanti a due
+stili diversi il coach dice cose diverse.
+
+Il giro in corso quando si passa il volante viene scartato: metà l'ha guidato
+uno, metà l'altro.
+
+## I consigli non si ripetono
+
+Ricalcolando da zero a ogni giro il coach ripeterebbe sempre la stessa lista:
+le abitudini non cambiano in un giro. Invece i consigli dati vengono archiviati,
+e al giro dopo l'app legge dall'elettronica del gioco se la modifica è stata
+fatta davvero — non lo chiede, lo verifica:
+
+- **non applicata** → una riga per dire che è ancora da fare, non riproposta
+  come nuova; dopo tre volte ignorate smette di insistere
+- **applicata e la metrica è migliorata** → quel parametro non si tocca più
+- **applicata e la metrica è peggiorata** → si torna indietro, coi numeri
+
+E una modifica alla volta: cambiarne tre insieme e leggere il giro dopo non
+misura niente, perché non si sa quale delle tre ha fatto la differenza. Le
+altre restano scritte, in coda.
+
 ## Il coach AI
 
 Senza configurazione l'app usa l'analisi euristica locale: funziona, è gratis,
@@ -86,9 +120,10 @@ dall'eseguibile: la chiave API non finisce dentro un binario.
 
 ```
 telemetry/   lettura della memoria condivisa, mappa del tracciato, demo
-analysis/    allineamento per distanza, delta, perdite per curva, setup AC EVO
+analysis/    allineamento per distanza, delta, perdite per curva, setup AC EVO,
+             profilo di guida, storico dei consigli
 coach/       report AI (Anthropic o provider OpenAI-compatibile) + euristica
-storage/     SQLite: sessioni, giri, campioni
+storage/     SQLite: sessioni, giri, campioni, consigli dati; registro piloti
 server/      FastAPI: WebSocket live, API di analisi, frontend statico
 web/         React + TypeScript
 ```

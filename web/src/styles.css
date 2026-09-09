@@ -1107,3 +1107,264 @@ body,
   border-color: var(--accent);
   color: #fff;
 }
+
+/* ---- Chi guida ---------------------------------------------------------- */
+/* Due persone sullo stesso computer: il selettore sta in testata perche' il
+   cambio succede fra un turno e l'altro, non fra una sessione e l'altra. */
+
+.driver-switch {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.driver-switch button {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(244, 247, 250, 0.6);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.driver-switch button:hover:not(:disabled) {
+  color: var(--hud);
+}
+
+.driver-switch button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.driver-switch button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* ---- Storico dei consigli ----------------------------------------------- */
+/* La riga che trasforma un consiglio in una verifica: cosa era stato detto,
+   se e' stato fatto, e cosa e' successo alla metrica. */
+
+.storico-strip {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(21, 32, 43, 0.05);
+  border-left: 3px solid var(--muted);
+}
+
+.storico-esito {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--panel-ink);
+  line-height: 1.5;
+}
+
+.storico-esito span {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(21, 32, 43, 0.08);
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.storico-esito b {
+  text-transform: uppercase;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+}
+
+.storico-esito.migliorato b {
+  color: var(--gain);
+}
+
+.storico-esito.peggiorato b {
+  color: var(--loss);
+}
+
+.storico-esito em {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.storico-sospesi {
+  margin: 6px 0 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.storico-sospesi b {
+  color: var(--accent-2);
+}
+
+/* Etichette sulle voci di setup: cosa fare adesso, cosa aspetta il suo turno. */
+
+.tip-head .tag {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tip-head .tag.now {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tip-head .tag.queued {
+  background: rgba(21, 32, 43, 0.08);
+  color: var(--muted);
+}
+
+.tip-head .tag.pending {
+  background: rgba(217, 119, 6, 0.14);
+  color: #b45309;
+}
+
+/* In coda: c'e', si legge, ma non compete con la modifica da fare adesso. */
+.tip-list li.queued {
+  opacity: 0.62;
+}
+
+/* ---- Confronto fra i due piloti ----------------------------------------- */
+
+.compare-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.compare-head > div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(21, 32, 43, 0.05);
+  border-top: 3px solid var(--accent);
+}
+
+.compare-head > div:last-child {
+  border-top-color: var(--accent-2);
+}
+
+.compare-head span {
+  display: block;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.compare-head strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 1.24rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--panel-ink);
+}
+
+.compare-head em {
+  font-style: normal;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.compare-note {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.compare-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.compare-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: var(--panel-ink);
+}
+
+.compare-row-head em {
+  font-style: normal;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-bars {
+  display: grid;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.compare-bars .bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(21, 32, 43, 0.07);
+  overflow: hidden;
+}
+
+.compare-bars .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.compare-bars .bar.b i {
+  background: var(--accent-2);
+}
+
+.compare-traits {
+  display: grid;
+  gap: 8px;
+}
+
+.compare-traits > div {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(21, 32, 43, 0.04);
+}
+
+.compare-traits span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.compare-traits p {
+  margin: 2px 0 0;
+  font-size: 0.86rem;
+  color: var(--panel-ink);
+}

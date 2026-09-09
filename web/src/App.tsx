@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CoachPanels } from "./CoachPanels";
+import { DriverSwitch } from "./DriverSwitch";
 import { InputRibbon } from "./InputRibbon";
 import { TrackMap } from "./TrackMap";
 import { Waiting } from "./Waiting";
@@ -68,6 +69,7 @@ export default function App() {
   const sessionState = session?.state ?? "waiting_game";
   const isDemo = sessionState === "demo";
   const validLaps = session?.valid_laps ?? 0;
+  const driverId = session?.driver?.id ?? null;
   // Il cruscotto compare quando c'e' qualcosa da mostrare: un giro valido
   // rilevato, oppure la modalita' dimostrativa.
   const inside = entered && (sessionState === "ready" || isDemo);
@@ -168,7 +170,7 @@ export default function App() {
 
   useEffect(() => {
     if (entered) void loadLaps();
-  }, [entered, loadLaps, validLaps]);
+  }, [entered, loadLaps, validLaps, driverId]);
 
   // Cambio pista: l'analisi precedente parla di un altro circuito — curve,
   // perdite e consigli non c'entrano piu' niente. Tenerla a schermo e' peggio
@@ -186,6 +188,23 @@ export default function App() {
     }
     shownTrack.current = track;
   }, [live?.track]);
+
+  // Cambio pilota: vale lo stesso ragionamento del cambio pista, ma piu' forte.
+  // Un'analisi che resta a schermo dopo che il volante e' passato sembra parlare
+  // di chi sta guidando adesso, e invece descrive le abitudini di un altro.
+  const shownDriver = useRef<string | null>(null);
+  useEffect(() => {
+    if (!driverId) return;
+    if (shownDriver.current && shownDriver.current !== driverId) {
+      setData(null);
+      setLaps([]);
+      setLapId(null);
+      setError(null);
+      analyzed.current = null;
+      void loadLaps();
+    }
+    shownDriver.current = driverId;
+  }, [driverId, loadLaps]);
 
   // L'analisi automatica a fine giro la decide il server, che sa quando un
   // giro si chiude. Qui resta solo la demo, che non ha giri veri.
@@ -252,6 +271,16 @@ export default function App() {
                 {live?.track || String(data?.meta?.track ?? "—")} ·{" "}
                 {live?.car || String(data?.meta?.car ?? "—")}
               </p>
+              <DriverSwitch
+                activeId={driverId ?? undefined}
+                onSwitch={() => {
+                  setData(null);
+                  setLaps([]);
+                  setLapId(null);
+                  setError(null);
+                  analyzed.current = null;
+                }}
+              />
             </div>
 
             <div className="hud">
@@ -369,6 +398,8 @@ export default function App() {
                 source={data.coach.source}
                 warning={data.coach.warning}
                 metrics={data.analysis.metrics}
+                storico={data.storico}
+                track={live?.track ?? (data?.meta?.track as string | undefined) ?? null}
               />
             ) : (
               <aside className="coach skeleton">
@@ -376,9 +407,14 @@ export default function App() {
                   ? "Analisi pronta a partire: rallenta o rientra ai box. Farla girare mentre guidi ruberebbe CPU al gioco."
                   : loading
                   ? "Il race engineer sta guardando il tuo giro…"
-                  : validLaps === 0
-                    ? "Sto imparando il tracciato. Completa un giro valido."
-                    : "Serve un secondo giro valido per avere un termine di paragone."}
+                  : // Contatore a zero non vuol dire archivio vuoto: dopo un cambio
+                    // pilota i giri di questa sessione ripartono da zero, ma quelli
+                    // gia' registrati restano — e dirgli "sto imparando" sarebbe falso.
+                  validLaps === 0 && laps.length > 0
+                    ? `In archivio ci sono ${laps.length} giri di ${session?.driver?.nome ?? "questo pilota"}: scegline uno qui sopra per rivederlo, oppure chiudi un giro valido e riparto da solo.`
+                    : validLaps === 0
+                      ? "Sto imparando il tracciato. Completa un giro valido."
+                      : "Serve un secondo giro valido per avere un termine di paragone."}
               </aside>
             )}
           </main>
