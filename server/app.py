@@ -286,6 +286,9 @@ class LiveHub:
         self._report_version = 0
         self._report_running = False
         self._report_lock = threading.Lock()
+        # Un'analisi in attesa di un momento sicuro per girare.
+        self._pending_lap: int | None = None
+        self._last_analysis_at = 0.0
 
     def _ensure_live_client(self):
         if self.client is not None:
@@ -414,6 +417,49 @@ class LiveHub:
         profile["track"] = track
         return profile
 
+    def _analysis_policy(self) -> str:
+        """Quando e' lecito far girare l'analisi.
+
+        lap    a ogni giro chiuso — per un modello remoto, che non consuma
+               niente sulla macchina che fa girare il gioco
+        pit    solo da fermi o ai box — per un modello locale: l'inferenza
+               satura la CPU, e il gioco quella CPU la sta usando
+        manual solo col pulsante
+        """
+        scelta = os.getenv("COACH_WHEN", "").strip().lower()
+        if scelta in ("lap", "pit", "manual"):
+            return scelta
+        # Default sensato: un modello sulla stessa macchina aspetta i box.
+        base_url = os.getenv("COACH_BASE_URL", "")
+        locale = any(h in base_url for h in ("localhost", "127.0.0.1", "0.0.0.0", "::1"))
+        return "pit" if locale else "lap"
+
+    def _safe_to_analyse(self, frame: dict[str, Any]) -> bool:
+        """Il pilota non sta guidando: nessuno stuttering da rubare."""
+        speed = frame.get("speed")
+        fermo = isinstance(speed, (int, float)) and speed < 5
+        return bool(frame.get("in_pit") or fermo or not frame.get("connected"))
+
+    def queue_analysis(self, lap_id: int | None) -> None:
+        """Mette in coda un'analisi; parte quando e' sicuro farla partire."""
+        self._pending_lap = lap_id
+        self.journal.event("analysis_queued", lap_id=lap_id, policy=self._analysis_policy())
+
+    def _drain_pending(self, frame: dict[str, Any]) -> None:
+        if self._pending_lap is None or self._report_running:
+            return
+        policy = self._analysis_policy()
+        if policy == "manual":
+            return
+        interval = float(os.getenv("COACH_MIN_INTERVAL_S", "0"))
+        if interval and (time.time() - self._last_analysis_at) < interval:
+            return
+        if policy == "pit" and not self._safe_to_analyse(frame):
+            return
+        lap_id, self._pending_lap = self._pending_lap, None
+        self._last_analysis_at = time.time()
+        self.start_analysis(lap_id)
+
     def start_analysis(self, lap_id: int | None = None, *, force_heuristic: bool = False) -> bool:
         """Avvia l'analisi in un thread. False se ce n'e' gia' una in corso.
 
@@ -446,7 +492,12 @@ class LiveHub:
 
     def report_state(self) -> dict[str, Any]:
         with self._report_lock:
-            return {"version": self._report_version, "running": self._report_running}
+            return {
+                "version": self._report_version,
+                "running": self._report_running,
+                "pending": self._pending_lap is not None,
+                "policy": self._analysis_policy(),
+            }
 
     def session_state(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Cosa deve mostrare l'interfaccia adesso.
@@ -573,7 +624,7 @@ class LiveHub:
         # Due giri validi bastano a confrontare: da li' in poi ogni giro
         # buono fa ripartire l'analisi, in sottofondo.
         if valid and self._valid_laps >= 2:
-            self.start_analysis(lap_id)
+            self.queue_analysis(lap_id)
 
         self.journal.event(
             "lap",
@@ -645,6 +696,8 @@ class LiveHub:
 
         if self._crossed_line(frame):
             self._close_lap(frame)
+
+        self._drain_pending(frame)
 
         now = time.time()
         if now - self._last_beat >= 10.0:

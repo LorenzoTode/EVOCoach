@@ -372,7 +372,9 @@ export default function App() {
               />
             ) : (
               <aside className="coach skeleton">
-                {loading
+                {live?.session?.analysis?.pending
+                  ? "Analisi pronta a partire: rallenta o rientra ai box. Farla girare mentre guidi ruberebbe CPU al gioco."
+                  : loading
                   ? "Il race engineer sta guardando il tuo giro…"
                   : validLaps === 0
                     ? "Sto imparando il tracciato. Completa un giro valido."

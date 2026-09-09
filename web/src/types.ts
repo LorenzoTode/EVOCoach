@@ -52,7 +52,14 @@ export type SessionState = {
   current_lap_valid: boolean;
   best_ms?: number | null;
   /** Il server dice quando c'e' un report nuovo da ritirare. */
-  analysis?: { version: number; running: boolean };
+  analysis?: {
+    version: number;
+    running: boolean;
+    /** Un'analisi e' in coda e aspetta un momento sicuro per girare. */
+    pending?: boolean;
+    /** lap = a ogni giro · pit = solo da fermi · manual = solo col pulsante */
+    policy?: "lap" | "pit" | "manual";
+  };
   last_lap?: {
     lap_id: number;
     lap_time_ms: number | null;
