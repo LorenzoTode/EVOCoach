@@ -153,11 +153,11 @@ def list_models() -> int:
 # tagli di nuovo il traguardo, la lentezza non si vede.
 BUDGET_GIRO_S = 60.0
 
-# Un modello da pochi miliardi di parametri su CPU sta sotto i 30 token al
-# secondo. Molto piu' veloce vuol dire che sta girando sulla scheda video —
-# cioe' contendendo la GPU al gioco, che e' esattamente cio' che si voleva
-# evitare mettendolo in locale.
-SOGLIA_SOSPETTO_GPU_TPS = 50.0
+# Sopra questa soglia il modello sta quasi certamente girando sulla scheda
+# video. Non e' un difetto di per se': con COACH_WHEN=pit l'analisi parte solo
+# da fermi, e li' la GPU e' libera — anzi, e' molto piu' veloce della CPU.
+# Diventa un problema solo se l'analisi puo' partire mentre si guida.
+SOGLIA_GPU_TPS = 50.0
 
 # Oltre questa lunghezza il modello si sta dilungando: il tempo di risposta
 # cresce in proporzione, e un report lungo non e' un report migliore.
@@ -250,11 +250,21 @@ def bench_coach(runs: int) -> int:
 
     if velocita:
         tps = statistics.median(velocita)
-        if tps > SOGLIA_SOSPETTO_GPU_TPS and base_url:
-            print(f"\n  ATTENZIONE: {tps:.0f} token/s sono troppi per una CPU.")
-            print("  Il modello sta quasi certamente girando sulla GPU, cioe' contende")
-            print("  la scheda video al gioco. Verifica con:  ollama ps")
-            print("  Nella colonna PROCESSOR deve leggersi 100% CPU.")
+        locale = any(h in base_url for h in ("localhost", "127.0.0.1", "::1"))
+        quando = os.getenv("COACH_WHEN", "").strip().lower() or ("pit" if locale else "lap")
+        if tps > SOGLIA_GPU_TPS and locale:
+            print(f"\n  {tps:.0f} token/s: il modello gira sulla GPU, non sulla CPU.")
+            if quando == "pit":
+                print("  Va bene cosi': con COACH_WHEN=pit l'analisi parte solo da fermi,")
+                print("  e da fermi la scheda video e' libera. Sulla GPU e' anche piu' veloce.")
+                print("  Resta un punto: il modello occupa VRAM anche quando non lavora.")
+                print("  Se il gioco ne ha bisogno, falla liberare fra un'analisi e l'altra:")
+                print("    [Environment]::SetEnvironmentVariable(\"OLLAMA_KEEP_ALIVE\",\"30s\",\"User\")")
+                print("  poi riavvia Ollama e controlla con  ollama ps  che si scarichi.")
+            else:
+                print(f"  Con COACH_WHEN={quando} puo' partire mentre guidi, e li' toglie")
+                print("  frame al gioco. Metti COACH_WHEN=pit, oppure forza la CPU nel")
+                print("  Modelfile con  PARAMETER num_gpu 0.")
 
     if uscite:
         med_out = statistics.median(uscite)
