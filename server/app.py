@@ -818,10 +818,18 @@ class CoachRequest(BaseModel):
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    """Cosa sta girando davvero.
+
+    Serve a rispondere in un colpo solo alla domanda che altrimenti costa
+    mezz'ora: e' il codice aggiornato, o l'app e' partita da una copia vecchia?
+    """
     return {
         "ok": True,
+        "versione": app_version(),
         "mode": hub.mode,
         "latest_mode": hub.latest.get("mode"),
+        # Se questa lista c'e', il server conosce i profili. Se manca, no.
+        "piloti": hub.drivers.list(),
         "map": hub.latest.get("map") or hub.track_map.snapshot(),
     }
 
@@ -856,7 +864,10 @@ def list_laps(
 
     tutti=true toglie il filtro sul pilota, per confrontare i due archivi.
     """
-    laps = hub.db.list_laps(track=track, driver=None if tutti else (driver or hub.driver))
+    laps = [
+        {**lap, "quando": time.strftime("%d/%m %H:%M", time.localtime(lap.get("created_at") or 0))}
+        for lap in hub.db.list_laps(track=track, driver=None if tutti else (driver or hub.driver))
+    ]
     if include_invalid:
         return laps
     return [lap for lap in laps if lap.get("valid")]
@@ -904,6 +915,58 @@ def set_driver(req: DriverSwitch) -> dict[str, Any]:
 def rename_driver(req: DriverRename) -> dict[str, Any]:
     ok = hub.drivers.rename(req.id, req.nome)
     return {"ok": ok, "piloti": hub.drivers.list()}
+
+
+class DriverReassign(BaseModel):
+    driver: str
+    lap_ids: list[int] | None = None
+    da_id: int | None = None
+    a_id: int | None = None
+
+
+@app.post("/api/drivers/reassign")
+def reassign_laps(req: DriverReassign) -> dict[str, Any]:
+    """Assegna dei giri gia' registrati all'altro pilota.
+
+    Per chi ha guidato in due prima di accorgersi che i profili esistevano.
+    Si indicano i giri per id — singoli in "lap_ids", oppure un intervallo
+    con "da_id" e "a_id" — e si guarda prima cosa si sta per spostare:
+    l'elenco completo e' su /api/laps?tutti=true, con l'ora di ogni giro.
+    """
+    if not hub.drivers.exists(req.driver):
+        return {"ok": False, "error": "pilota_sconosciuto"}
+
+    ids = list(req.lap_ids or [])
+    if req.da_id is not None and req.a_id is not None:
+        lo, hi = sorted((req.da_id, req.a_id))
+        ids += [r["id"] for r in hub.db.list_laps(limit=1000) if lo <= r["id"] <= hi]
+    ids = sorted(set(ids))
+    if not ids:
+        return {"ok": False, "error": "nessun_giro_indicato"}
+
+    prima = {r["id"]: r for r in hub.db.list_laps(limit=1000)}
+    spostati = hub.db.reassign_laps(req.driver, ids)
+    hub.journal.event("laps_reassigned", a=req.driver, giri=ids, spostati=spostati)
+    return {
+        "ok": True,
+        "spostati": spostati,
+        "a": {"id": req.driver, "nome": hub.drivers.name(req.driver)},
+        "giri": [
+            {
+                "id": i,
+                "numero": (prima.get(i) or {}).get("lap_number"),
+                "tempo_ms": (prima.get(i) or {}).get("lap_time_ms"),
+                "era_di": hub.drivers.name((prima.get(i) or {}).get("driver")),
+                "quando": time.strftime(
+                    "%d/%m %H:%M", time.localtime((prima.get(i) or {}).get("created_at") or 0)
+                ),
+            }
+            for i in ids
+            if i in prima
+        ],
+        "nota": "I consigli gia' dati restano al pilota che li ha ricevuti: "
+                "sono stati scritti sui dati di allora.",
+    }
 
 
 @app.get("/api/drivers/compare")

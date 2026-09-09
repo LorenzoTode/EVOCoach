@@ -259,6 +259,26 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def reassign_laps(self, driver: str, lap_ids: list[int]) -> int:
+        """Sposta dei giri da un pilota all'altro.
+
+        Serve dopo una sessione in cui il volante e' passato senza dirlo
+        all'app: i giri di due persone sono in un mucchio solo, e finche'
+        restano li' il profilo descrive una media che non e' di nessuno.
+        Si sposta il giro, non il consiglio: quello che il coach ha gia' detto
+        l'ha detto guardando i dati che aveva allora, e riscrivere la storia
+        renderebbe illeggibile il perche' di ogni consiglio.
+        """
+        if not lap_ids:
+            return 0
+        segnaposto = ",".join("?" * len(lap_ids))
+        cur = self._conn.execute(
+            f"UPDATE laps SET driver = ? WHERE id IN ({segnaposto})",
+            [driver, *lap_ids],
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     # ---- consigli gia' dati ---------------------------------------------
 
     def save_advice(
